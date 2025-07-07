@@ -350,11 +350,22 @@ def process_all_images(model_path: str):
 
 # %%
 def convert_bbox_format(bbox, format_type: str) -> List[float]:
-    """Convert between different bounding box formats"""
+    """Convert between different bounding box formats with robust error handling"""
     if format_type == "gt_to_pred":
         # Ground truth: {xMinNormalized, yMinNormalized, xMaxNormalized, yMaxNormalized}
         # to Model: [ymin, xmin, ymax, xmax]
-        return [bbox["yMinNormalized"], bbox["xMinNormalized"], bbox["yMaxNormalized"], bbox["xMaxNormalized"]]
+        required_keys = ["xMinNormalized", "yMinNormalized", "xMaxNormalized", "yMaxNormalized"]
+        
+        # Check if all required keys are present
+        missing_keys = [key for key in required_keys if key not in bbox]
+        if missing_keys:
+            raise KeyError(f"Missing required keys in bbox: {missing_keys}. Available keys: {list(bbox.keys())}")
+        
+        try:
+            return [bbox["yMinNormalized"], bbox["xMinNormalized"], bbox["yMaxNormalized"], bbox["xMaxNormalized"]]
+        except KeyError as e:
+            raise KeyError(f"Error accessing bbox coordinates: {e}. Bbox content: {bbox}")
+            
     elif format_type == "pred_to_gt":
         # Model: [ymin, xmin, ymax, xmax]
         # to Ground truth format: {xMinNormalized, yMinNormalized, xMaxNormalized, yMaxNormalized}
@@ -366,6 +377,11 @@ def convert_bbox_format(bbox, format_type: str) -> List[float]:
         }
     else:
         raise ValueError(f"Unknown format_type: {format_type}")
+
+def is_valid_bbox(bbox: Dict) -> bool:
+    """Check if a bounding box has all required coordinate keys"""
+    required_keys = ["xMinNormalized", "yMinNormalized", "xMaxNormalized", "yMaxNormalized"]
+    return all(key in bbox for key in required_keys)
 
 def calculate_iou(box1: List[float], box2: List[float]) -> float:
     """Calculate IoU between two bounding boxes in [ymin, xmin, ymax, xmax] format"""
@@ -398,6 +414,7 @@ def evaluate_with_iou(results: List[Dict], iou_threshold: float = 0.5) -> Dict:
     false_negatives = 0
     
     detailed_results = []
+    bbox_errors = []
     
     for result in results:
         if not result["inference_success"]:
@@ -408,7 +425,15 @@ def evaluate_with_iou(results: List[Dict], iou_threshold: float = 0.5) -> Dict:
         if 'annotations' in result.get('metadata', {}):
             for bbox in result['metadata']['annotations'].get('bboxes', []):
                 if 'burner' in bbox.get('label', '').lower():
-                    gt_boxes.append(convert_bbox_format(bbox, "gt_to_pred"))
+                    if is_valid_bbox(bbox):
+                        gt_boxes.append(convert_bbox_format(bbox, "gt_to_pred"))
+                    else:
+                        # Log problematic bbox for debugging
+                        bbox_errors.append({
+                            'file': result['file'],
+                            'bbox': bbox,
+                            'missing_keys': [key for key in ["xMinNormalized", "yMinNormalized", "xMaxNormalized", "yMaxNormalized"] if key not in bbox]
+                        })
         
         # Get predicted burner boxes
         pred_boxes = []
@@ -464,6 +489,17 @@ def evaluate_with_iou(results: List[Dict], iou_threshold: float = 0.5) -> Dict:
     recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
     f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
     
+    # Log bbox errors if any
+    if bbox_errors:
+        print(f"\n⚠️  Found {len(bbox_errors)} problematic bounding boxes:")
+        for error in bbox_errors[:5]:  # Show first 5
+            print(f"  File: {error['file']}")
+            print(f"  Missing keys: {error['missing_keys']}")
+            print(f"  Available keys: {list(error['bbox'].keys())}")
+            print(f"  Bbox content: {error['bbox']}")
+        if len(bbox_errors) > 5:
+            print(f"  ... and {len(bbox_errors) - 5} more")
+    
     return {
         'precision': precision,
         'recall': recall,
@@ -471,7 +507,8 @@ def evaluate_with_iou(results: List[Dict], iou_threshold: float = 0.5) -> Dict:
         'true_positives': true_positives,
         'false_positives': false_positives,
         'false_negatives': false_negatives,
-        'detailed_results': detailed_results
+        'detailed_results': detailed_results,
+        'bbox_errors': len(bbox_errors)
     }
 
 # %% [markdown]
@@ -503,15 +540,21 @@ def visualize_single_image_pipeline(metadata_file: str, model_path: str):
     
     all_gt_labels = []
     gt_boxes = []
+    invalid_gt_boxes = 0
     if 'annotations' in metadata:
         for bbox in metadata['annotations'].get('bboxes', []):
             label = bbox.get('label', '')
             all_gt_labels.append(label)
             if 'burner' in label.lower():
-                gt_boxes.append(bbox)
+                if is_valid_bbox(bbox):
+                    gt_boxes.append(bbox)
+                else:
+                    invalid_gt_boxes += 1
     
     print(f"   All ground truth labels: {all_gt_labels}")
     print(f"   Burner labels found: {len(gt_boxes)} burners")
+    if invalid_gt_boxes > 0:
+        print(f"   ⚠️  Skipped {invalid_gt_boxes} burner boxes with invalid coordinates")
     
     # Step 2: Show preprocessing
     print(f"\n🔄 Step 2: Preprocessing")
@@ -545,16 +588,18 @@ def visualize_single_image_pipeline(metadata_file: str, model_path: str):
     axes[0].axis('off')
     
     for bbox in gt_boxes:
-        w, h = original_image.size
-        x_min = int(bbox["xMinNormalized"] * w)
-        y_min = int(bbox["yMinNormalized"] * h)
-        x_max = int(bbox["xMaxNormalized"] * w)
-        y_max = int(bbox["yMaxNormalized"] * h)
-        
-        rect = plt.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min, 
-                           fill=False, edgecolor='green', linewidth=3)
-        axes[0].add_patch(rect)
-        axes[0].text(x_min, y_min - 10, "GT", color='green', fontsize=12, weight='bold')
+        # Only draw boxes that have valid coordinates
+        if is_valid_bbox(bbox):
+            w, h = original_image.size
+            x_min = int(bbox["xMinNormalized"] * w)
+            y_min = int(bbox["yMinNormalized"] * h)
+            x_max = int(bbox["xMaxNormalized"] * w)
+            y_max = int(bbox["yMaxNormalized"] * h)
+            
+            rect = plt.Rectangle((x_min, y_min), x_max - x_min, y_max - y_min, 
+                               fill=False, edgecolor='green', linewidth=3)
+            axes[0].add_patch(rect)
+            axes[0].text(x_min, y_min - 10, "GT", color='green', fontsize=12, weight='bold')
     
     # Preprocessed image
     if input_dtype == np.uint8:
