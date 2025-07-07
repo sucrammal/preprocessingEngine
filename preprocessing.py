@@ -3,10 +3,16 @@
 # 
 # **Pipeline Overview:** Download model → Process images → Evaluate burner classification
 # 
-# **Two Independent Evaluation Methods:**
+# **Key Features:**
 # 1. **Simple Evaluation**: Presence/absence of burners (binary classification)
-# 2. **Advanced Evaluation**: Spatial IoU-based matching (object detection metrics)
-# 3. **Visualization Demo**: Visual walkthrough of pipeline on sample image
+# 2. **Advanced Evaluation**: Spatial IoU-based matching (object detection metrics)  
+# 3. **Preprocessing Comparison**: Test different normalization techniques for lighting variations
+# 4. **Visualization Demo**: Visual walkthrough of pipeline on sample image
+# 
+# **Preprocessing Methods Available:**
+# - **Simple**: Standard 0-1 normalization (baseline)
+# - **GCN**: Global Contrast Normalization (handles overall brightness differences)
+# - **LCN**: Local Contrast Normalization (handles local lighting/shadow variations)
 
 # %% [markdown]
 # ## Setup
@@ -128,21 +134,81 @@ def load_model(model_path: str):
     interpreter.allocate_tensors()
     return interpreter
 
-def preprocess_image(image_path: str, target_size: tuple = (640, 640), input_dtype=np.float32) -> np.ndarray:
-    """Preprocess image for model"""
+def preprocess_image(image_path: str, target_size: tuple = (640, 640), input_dtype=np.float32, 
+                    normalization_method: str = "simple") -> np.ndarray:
+    """Preprocess image for model with different normalization techniques"""
     image = Image.open(image_path).convert('RGB')
     image = image.resize(target_size)
+    image_array = np.array(image, dtype=np.float32)
     
-    if input_dtype == np.uint8:
-        # For quantized models (UINT8)
-        image_array = np.array(image, dtype=np.uint8)
+    # Apply different normalization techniques
+    if normalization_method == "simple":
+        # Simple 0-1 normalization
+        normalized = image_array / 255.0
+    
+    elif normalization_method == "gcn":
+        # Global Contrast Normalization
+        normalized = apply_global_contrast_normalization(image_array)
+    
+    elif normalization_method == "lcn":
+        # Local Contrast Normalization
+        normalized = apply_local_contrast_normalization(image_array)
+    
     else:
-        # For float models (FLOAT32)
-        image_array = np.array(image, dtype=np.float32) / 255.0
+        raise ValueError(f"Unknown normalization method: {normalization_method}")
     
-    return np.expand_dims(image_array, axis=0)
+    # Convert to model's expected dtype
+    if input_dtype == np.uint8:
+        # For quantized models, convert back to 0-255 range
+        normalized = np.clip(normalized * 255.0, 0, 255).astype(np.uint8)
+    else:
+        # Keep as float32
+        normalized = normalized.astype(np.float32)
+    
+    return np.expand_dims(normalized, axis=0)
 
-def run_inference(image_path: str, interpreter) -> List[Dict]:
+def apply_global_contrast_normalization(image_array: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
+    """Apply Global Contrast Normalization (GCN)"""
+    # Calculate global mean and std across all pixels and channels
+    global_mean = np.mean(image_array)
+    global_std = np.std(image_array)
+    
+    # Normalize: (X - μ) / (σ + ε)
+    normalized = (image_array - global_mean) / (global_std + epsilon)
+    
+    # Scale back to reasonable range (0-1)
+    normalized = (normalized - normalized.min()) / (normalized.max() - normalized.min() + epsilon)
+    
+    return normalized
+
+def apply_local_contrast_normalization(image_array: np.ndarray, window_size: int = 9, epsilon: float = 1e-8) -> np.ndarray:
+    """Apply Local Contrast Normalization (LCN)"""
+    from scipy import ndimage
+    
+    # Convert to grayscale for LCN calculation, then apply to all channels
+    normalized = np.zeros_like(image_array, dtype=np.float32)
+    
+    for channel in range(image_array.shape[2]):
+        channel_data = image_array[:, :, channel]
+        
+        # Calculate local mean using a uniform filter
+        local_mean = ndimage.uniform_filter(channel_data, size=window_size, mode='reflect')
+        
+        # Calculate local standard deviation
+        local_variance = ndimage.uniform_filter(channel_data**2, size=window_size, mode='reflect') - local_mean**2
+        local_std = np.sqrt(np.maximum(local_variance, 0)) + epsilon
+        
+        # Apply LCN: (X - local_mean) / (local_std + ε)
+        channel_normalized = (channel_data - local_mean) / local_std
+        
+        # Scale to 0-1 range
+        channel_normalized = (channel_normalized - channel_normalized.min()) / (channel_normalized.max() - channel_normalized.min() + epsilon)
+        
+        normalized[:, :, channel] = channel_normalized
+    
+    return normalized
+
+def run_inference(image_path: str, interpreter, normalization_method: str = "simple") -> List[Dict]:
     """Run inference and extract burner detections"""
     if not os.path.exists(image_path):
         return []
@@ -151,11 +217,11 @@ def run_inference(image_path: str, interpreter) -> List[Dict]:
     input_details = interpreter.get_input_details()
     output_details = interpreter.get_output_details()
     
-    # Preprocess image with correct dtype
+    # Preprocess image with correct dtype and normalization method
     input_shape = input_details[0]['shape']
     input_dtype = input_details[0]['dtype']
     target_size = (input_shape[1], input_shape[2])
-    image_data = preprocess_image(image_path, target_size, input_dtype)
+    image_data = preprocess_image(image_path, target_size, input_dtype, normalization_method)
     
     # Run inference
     interpreter.set_tensor(input_details[0]['index'], image_data)
@@ -235,7 +301,7 @@ def process_all_images(model_path: str):
             continue
         
         # Run inference
-        detections = run_inference(image_path, interpreter)
+        detections = run_inference(image_path, interpreter, "simple")
         
         # Extract ground truth burner labels
         gt_burners = []
@@ -460,7 +526,7 @@ def visualize_single_image_pipeline(metadata_file: str, model_path: str):
     
     # Step 3: Show inference results
     print(f"\n🎯 Step 3: Inference Results")
-    detections = run_inference(image_path, interpreter)
+    detections = run_inference(image_path, interpreter, "simple")
     pred_boxes = [det for det in detections if det['class_id'] == 0]
     
     print(f"   Total detections: {len(detections)}")
@@ -561,7 +627,7 @@ def process_all_images_with_iou(model_path: str):
             continue
         
         # Run inference
-        detections = run_inference(image_path, interpreter)
+        detections = run_inference(image_path, interpreter, "simple")
         
         results.append({
             "file": os.path.basename(metadata_file),
@@ -681,6 +747,233 @@ if results:
     with open(output_file, 'w') as f:
         json.dump(results, f, indent=2)
     print(f"\n📄 Results saved to {output_file}")
+
+# %%
+# ===== PREPROCESSING METHOD COMPARISON =====
+if model_path:
+    print("\n" + "="*60)
+    print("🧪 PREPROCESSING COMPARISON EXPERIMENT")
+    print("="*60)
+    
+    # Test preprocessing methods on subset of images
+    comparison_results = compare_preprocessing_methods(model_path, max_images=100)
+    
+    # Visualize preprocessing effects on a sample image
+    metadata_files = glob.glob(os.path.join(METADATA_DIR, "*.json"))
+    if metadata_files:
+        sample_metadata = metadata_files[0]
+        print(f"\nVisualizing preprocessing effects on: {os.path.basename(sample_metadata)}")
+        visualize_preprocessing_effects(sample_metadata, model_path)
+
+# %% [markdown]
+# ## Preprocessing Method Comparison
+# 
+# Compare different normalization techniques to handle lighting variations
+
+# %%
+def process_images_with_preprocessing_method(model_path: str, normalization_method: str, 
+                                           max_images: int = 100) -> List[Dict]:
+    """Process subset of images with specific preprocessing method"""
+    if not model_path or not os.path.exists(model_path):
+        print(f"❌ Model not found")
+        return []
+    
+    interpreter = load_model(model_path)
+    metadata_files = glob.glob(os.path.join(METADATA_DIR, "*.json"))
+    
+    # Limit to subset for comparison (processing all 8000+ would take too long)
+    test_files = metadata_files[:max_images]
+    results = []
+    
+    print(f"Testing {normalization_method} normalization on {len(test_files)} images...")
+    
+    for i, metadata_file in enumerate(test_files):
+        # Load metadata
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        
+        # Find corresponding image
+        image_path = find_image_for_metadata(metadata_file)
+        if not image_path:
+            continue
+        
+        # Run inference with specific normalization method
+        detections = run_inference(image_path, interpreter, normalization_method)
+        
+        # Extract ground truth burner labels
+        gt_burners = []
+        if 'annotations' in metadata:
+            for bbox in metadata['annotations'].get('bboxes', []):
+                if 'burner' in bbox.get('label', '').lower():
+                    gt_burners.append(bbox['label'])
+        
+        # Check if model detected burners
+        pred_burners = [det for det in detections if det['class_id'] == 0]
+        
+        results.append({
+            "file": os.path.basename(metadata_file),
+            "image_path": image_path,
+            "ground_truth_burners": len(gt_burners),
+            "predicted_burners": len(pred_burners),
+            "detections": detections,
+            "has_burner_gt": len(gt_burners) > 0,
+            "has_burner_pred": len(pred_burners) > 0,
+            "normalization_method": normalization_method
+        })
+        
+        # Progress update every 25 images for smaller batches
+        if (i + 1) % 25 == 0:
+            print(f"  Progress: {i + 1}/{len(test_files)} images processed")
+    
+    print(f"✅ {normalization_method} processing complete: {len(results)} images")
+    return results
+
+def compare_preprocessing_methods(model_path: str, max_images: int = 100):
+    """Compare all three preprocessing methods"""
+    methods = ["simple", "gcn", "lcn"]
+    all_results = {}
+    
+    print("🧪 PREPROCESSING METHOD COMPARISON")
+    print("=" * 60)
+    print(f"Testing {len(methods)} normalization methods on {max_images} images each")
+    print("Methods: Simple (0-1), GCN (Global Contrast), LCN (Local Contrast)")
+    print("=" * 60)
+    
+    # Test each method
+    for method in methods:
+        print(f"\n🔬 Testing {method.upper()} normalization...")
+        results = process_images_with_preprocessing_method(model_path, method, max_images)
+        all_results[method] = results
+    
+    # Compare results
+    print(f"\n📊 PREPROCESSING COMPARISON RESULTS")
+    print("=" * 60)
+    
+    for method, results in all_results.items():
+        if not results:
+            continue
+            
+        total = len(results)
+        true_positives = sum(1 for r in results if r['has_burner_gt'] and r['has_burner_pred'])
+        false_positives = sum(1 for r in results if not r['has_burner_gt'] and r['has_burner_pred'])
+        false_negatives = sum(1 for r in results if r['has_burner_gt'] and not r['has_burner_pred'])
+        true_negatives = sum(1 for r in results if not r['has_burner_gt'] and not r['has_burner_pred'])
+        
+        accuracy = (true_positives + true_negatives) / total if total > 0 else 0
+        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        
+        # Count total detections (regardless of correctness)
+        total_detections = sum(r['predicted_burners'] for r in results)
+        avg_detections = total_detections / total if total > 0 else 0
+        
+        print(f"\n🔸 {method.upper()} Normalization:")
+        print(f"   Accuracy:  {accuracy:.3f}")
+        print(f"   Precision: {precision:.3f}")
+        print(f"   Recall:    {recall:.3f}")
+        print(f"   F1 Score:  {f1:.3f}")
+        print(f"   Avg Detections/Image: {avg_detections:.2f}")
+        print(f"   TP: {true_positives}, FP: {false_positives}, FN: {false_negatives}, TN: {true_negatives}")
+    
+    # Find best method
+    best_method = None
+    best_f1 = 0
+    
+    for method, results in all_results.items():
+        if not results:
+            continue
+        total = len(results)
+        true_positives = sum(1 for r in results if r['has_burner_gt'] and r['has_burner_pred'])
+        false_positives = sum(1 for r in results if not r['has_burner_gt'] and r['has_burner_pred'])
+        false_negatives = sum(1 for r in results if r['has_burner_gt'] and not r['has_burner_pred'])
+        
+        precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+        recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+        f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
+        
+        if f1 > best_f1:
+            best_f1 = f1
+            best_method = method
+    
+    if best_method:
+        print(f"\n🏆 BEST PREPROCESSING METHOD: {best_method.upper()}")
+        print(f"   Best F1 Score: {best_f1:.3f}")
+        print(f"   💡 Recommended for production use!")
+    
+    # Save comparison results
+    comparison_file = "preprocessing_comparison.json"
+    with open(comparison_file, 'w') as f:
+        # Convert results to JSON-serializable format
+        serializable_results = {}
+        for method, results in all_results.items():
+            serializable_results[method] = []
+            for result in results:
+                # Remove non-serializable items
+                clean_result = {k: v for k, v in result.items() if k != 'detections'}
+                clean_result['detection_count'] = len(result.get('detections', []))
+                serializable_results[method].append(clean_result)
+        
+        json.dump(serializable_results, f, indent=2)
+    
+    print(f"\n📄 Comparison results saved to {comparison_file}")
+    return all_results
+
+def visualize_preprocessing_effects(metadata_file: str, model_path: str):
+    """Visualize the effects of different preprocessing methods on a single image"""
+    
+    print("🔍 Visualizing preprocessing effects on sample image...")
+    
+    # Load metadata and find image
+    with open(metadata_file, 'r') as f:
+        metadata = json.load(f)
+    
+    image_path = find_image_for_metadata(metadata_file)
+    if not image_path:
+        print(f"❌ No image found for {metadata_file}")
+        return
+    
+    # Load original image
+    original_image = Image.open(image_path).convert('RGB')
+    
+    # Test all three preprocessing methods
+    methods = ["simple", "gcn", "lcn"]
+    method_names = ["Simple (0-1)", "Global Contrast Norm", "Local Contrast Norm"]
+    
+    # Load model to get expected input format
+    interpreter = load_model(model_path)
+    input_details = interpreter.get_input_details()
+    input_shape = input_details[0]['shape']
+    input_dtype = input_details[0]['dtype']
+    target_size = (input_shape[1], input_shape[2])
+    
+    # Create visualization
+    fig, axes = plt.subplots(1, 4, figsize=(20, 5))
+    
+    # Original image
+    axes[0].imshow(original_image)
+    axes[0].set_title("Original Image")
+    axes[0].axis('off')
+    
+    # Apply each preprocessing method
+    for i, (method, name) in enumerate(zip(methods, method_names)):
+        preprocessed = preprocess_image(image_path, target_size, input_dtype, method)
+        
+        # Convert back to display format
+        if input_dtype == np.uint8:
+            display_image = preprocessed[0].astype(np.uint8)
+        else:
+            display_image = (preprocessed[0] * 255).astype(np.uint8)
+        
+        axes[i + 1].imshow(display_image)
+        axes[i + 1].set_title(f"{name}")
+        axes[i + 1].axis('off')
+    
+    plt.tight_layout()
+    plt.savefig("preprocessing_comparison.png", dpi=150, bbox_inches='tight')
+    plt.show()
+    
+    print(f"📸 Preprocessing comparison saved: preprocessing_comparison.png")
 
 # %% [markdown]
 # ## Pipeline Visualization Demo
