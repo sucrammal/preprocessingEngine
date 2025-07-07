@@ -1,314 +1,261 @@
 # %% [markdown]
-# # Preprocessing Engine for Viam Cloud Inference
+# # Burner Detection Preprocessing Engine
 # 
-# This notebook processes images through Viam cloud inference to detect burners
-# and compares results with ground truth metadata.
+# Simple workflow: Download model → Process images → Check burner classification accuracy
 
 # %% [markdown]
-# ## Setup and Imports
+# ## Setup
 
 # %%
 import json
 import os
 import subprocess
 import glob
-from pathlib import Path
 from typing import Dict, List, Any
-import pandas as pd
+import numpy as np
+from PIL import Image
+import tensorflow as tf
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# %% [markdown]
-# ## Configuration
-# 
-# Configuration is loaded from environment variables (.env file)
-# Create a .env file with your Viam organization details
-
-# %%
-# Viam Configuration - loaded from environment variables
+# Configuration
 VIAM_CONFIG = {
     "model_name": os.getenv("VIAM_MODEL_NAME", "your-burner-detection-model"),
     "model_org_id": os.getenv("VIAM_MODEL_ORG_ID", "your-model-org-id"),
     "model_version": os.getenv("VIAM_MODEL_VERSION", "2024-XX-XXTXX-XX-XX"),
-    "org_id": os.getenv("VIAM_ORG_ID", "your-inference-org-id")
 }
 
-# Local paths - can be overridden via environment variables
 METADATA_DIR = os.getenv("METADATA_DIR", "metadata")
-IMAGES_DIR = os.getenv("IMAGES_DIR", "images")
+IMAGES_DIR = os.getenv("IMAGES_DIR", "data")
+MODEL_DIR = os.getenv("MODEL_DIR", "models")
 
-# Print configuration (without showing sensitive values)
-print("Current configuration:")
-print(f"  Model name: {VIAM_CONFIG['model_name']}")
-print(f"  Model org ID: {VIAM_CONFIG['model_org_id'][:8]}..." if len(VIAM_CONFIG['model_org_id']) > 8 else f"  Model org ID: {VIAM_CONFIG['model_org_id']}")
-print(f"  Model version: {VIAM_CONFIG['model_version']}")
-print(f"  Inference org ID: {VIAM_CONFIG['org_id'][:8]}..." if len(VIAM_CONFIG['org_id']) > 8 else f"  Inference org ID: {VIAM_CONFIG['org_id']}")
-print(f"  Metadata dir: {METADATA_DIR}")
-print(f"  Images dir: {IMAGES_DIR}")
+print(f"Model: {VIAM_CONFIG['model_name']} v{VIAM_CONFIG['model_version']}")
+print(f"Data: {len(glob.glob(os.path.join(METADATA_DIR, '*.json')))} metadata files")
 
 # %% [markdown]
-# ## Helper Functions
+# ## Step 1: Download Model
 
 # %%
-def load_metadata(metadata_path: str) -> Dict[str, Any]:
-    """Load metadata JSON file"""
-    with open(metadata_path, 'r') as f:
-        return json.load(f)
-
-def get_binary_data_id(metadata: Dict[str, Any]) -> str:
-    """Extract binary data ID from metadata"""
-    return metadata.get('id', '')
-
-def run_viam_inference(binary_data_id: str, config: Dict[str, str]) -> Dict[str, Any]:
-    """Run Viam cloud inference on a binary data ID"""
+def download_model():
+    """Download TFLite model from Viam"""
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    
     cmd = [
-        "viam", "infer",
-        "--binary-data-id", binary_data_id,
-        "--model-name", config["model_name"],
-        "--model-org-id", config["model_org_id"],
-        "--model-version", config["model_version"],
-        "--org-id", config["org_id"]
+        "viam", "packages", "export",
+        "--org-id", VIAM_CONFIG["model_org_id"],
+        "--name", VIAM_CONFIG["model_name"],
+        "--version", VIAM_CONFIG["model_version"],
+        "--type", "ml_model",
+        "--destination", MODEL_DIR
     ]
     
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return {"success": True, "output": result.stdout, "error": None}
-    except subprocess.CalledProcessError as e:
-        return {"success": False, "output": None, "error": e.stderr}
+    print("Downloading model...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode == 0:
+        # Find .tflite file
+        tflite_files = glob.glob(os.path.join(MODEL_DIR, "**/*.tflite"), recursive=True)
+        if tflite_files:
+            model_path = tflite_files[0]
+            print(f"✅ Model downloaded: {model_path}")
+            return model_path
+        else:
+            print("❌ No .tflite file found")
+            return None
+    else:
+        print(f"❌ Download failed: {result.stderr}")
+        return None
 
-def parse_inference_output(output: str) -> Dict[str, Any]:
-    """Parse the output from viam infer command"""
-    # This is a basic parser - you may need to adjust based on actual output format
-    lines = output.strip().split('\n')
-    
-    inference_data = {
-        "tensors": {},
-        "annotations": []
-    }
-    
-    # Parse tensor information
-    in_tensors = False
-    for line in lines:
-        if "Output Tensors:" in line:
-            in_tensors = True
-            continue
-        elif "Annotations:" in line:
-            in_tensors = False
-            continue
-        elif in_tensors and "Tensor Name:" in line:
-            # Parse tensor info - format: "Tensor Name: name Shape: [shape] Values: [values]"
-            parts = line.split()
-            if len(parts) >= 4:
-                tensor_name = parts[2]
-                # Extract shape and values - this is a simplified parser
-                inference_data["tensors"][tensor_name] = line
-    
-    return inference_data
+# Download model
+model_path = download_model()
 
 # %% [markdown]
-# ## Load and Process Metadata Files
+# ## Step 2: Process Images
 
 # %%
-def get_metadata_files():
-    """Get all metadata JSON files"""
-    metadata_files = glob.glob(os.path.join(METADATA_DIR, "*.json"))
-    return metadata_files
+def load_model(model_path: str):
+    """Load TFLite model"""
+    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
+    return interpreter
 
-# Load metadata files
-metadata_files = get_metadata_files()
-print(f"Found {len(metadata_files)} metadata files")
+def preprocess_image(image_path: str, target_size: tuple = (640, 640)) -> np.ndarray:
+    """Preprocess image for model"""
+    image = Image.open(image_path).convert('RGB')
+    image = image.resize(target_size)
+    image_array = np.array(image, dtype=np.float32) / 255.0
+    return np.expand_dims(image_array, axis=0)
 
-# Display first metadata file structure
-if metadata_files:
-    sample_metadata = load_metadata(metadata_files[0])
-    print("\nSample metadata structure:")
-    print(json.dumps(sample_metadata, indent=2)[:500] + "...")
-
-# %% [markdown]
-# ## Debug and Check Data Availability
-
-# %%
-def debug_data_access():
-    """Debug data access and binary data IDs"""
-    if not metadata_files:
-        print("No metadata files found!")
-        return
+def run_inference(image_path: str, interpreter) -> List[Dict]:
+    """Run inference and extract burner detections"""
+    if not os.path.exists(image_path):
+        return []
     
-    print("=== Debugging Data Access ===")
-    print(f"Config org ID: {VIAM_CONFIG['org_id']}")
-    print(f"Config model org ID: {VIAM_CONFIG['model_org_id']}")
+    # Get input/output details
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
     
-    # Check first few metadata files
-    for i, metadata_file in enumerate(metadata_files[:3]):
-        print(f"\n--- Metadata file {i+1}: {os.path.basename(metadata_file)} ---")
-        metadata = load_metadata(metadata_file)
-        binary_data_id = get_binary_data_id(metadata)
-        
-        print(f"Binary data ID: {binary_data_id}")
-        print(f"File org ID: {metadata['captureMetadata']['organizationId']}")
-        print(f"Capture time: {metadata['timeRequested']}")
-        print(f"URI: {metadata.get('uri', 'N/A')}")
-        
-        # Check if org IDs match
-        if VIAM_CONFIG['org_id'] != metadata['captureMetadata']['organizationId']:
-            print("⚠️  WARNING: Config org ID doesn't match file org ID")
-
-# Run debug (uncomment to execute)
-debug_data_access()
-
-# %% [markdown]
-# ## Run Cloud Inference on Single Image (Test)
-
-# %%
-def test_single_inference():
-    """Test inference on a single image to see the output format"""
-    if not metadata_files:
-        print("No metadata files found!")
-        return
-    
-    # Get the first metadata file
-    test_metadata = load_metadata(metadata_files[0])
-    binary_data_id = get_binary_data_id(test_metadata)
-    
-    print(f"Testing inference on binary data ID: {binary_data_id}")
-    print(f"Ground truth from metadata:")
-    
-    # Display ground truth annotations
-    if 'annotations' in test_metadata:
-        for annotation in test_metadata['annotations'].get('bboxes', []):
-            print(f"  - Label: {annotation['label']}")
-            print(f"    Bbox: x_min={annotation['xMinNormalized']:.3f}, y_min={annotation['yMinNormalized']:.3f}")
-            print(f"          x_max={annotation['xMaxNormalized']:.3f}, y_max={annotation['yMaxNormalized']:.3f}")
+    # Preprocess image
+    input_shape = input_details[0]['shape']
+    target_size = (input_shape[1], input_shape[2])
+    image_data = preprocess_image(image_path, target_size)
     
     # Run inference
-    print("\nRunning cloud inference...")
-    result = run_viam_inference(binary_data_id, VIAM_CONFIG)
+    interpreter.set_tensor(input_details[0]['index'], image_data)
+    interpreter.invoke()
     
-    if result["success"]:
-        print("✅ Inference successful!")
-        print("\nRaw output:")
-        print(result["output"])
+    # Get outputs
+    outputs = {}
+    for detail in output_details:
+        outputs[detail['name']] = interpreter.get_tensor(detail['index'])
+    
+    # Parse detections (adjust tensor names based on your model)
+    detections = []
+    boxes = outputs.get('detection_boxes', outputs.get('boxes', None))
+    classes = outputs.get('detection_classes', outputs.get('classes', None))
+    scores = outputs.get('detection_scores', outputs.get('scores', None))
+    
+    if boxes is not None and classes is not None and scores is not None:
+        # Remove batch dimension
+        if boxes.ndim == 3: boxes = boxes[0]
+        if classes.ndim == 2: classes = classes[0]
+        if scores.ndim == 2: scores = scores[0]
         
-        # Parse the output
-        parsed = parse_inference_output(result["output"])
-        print("\nParsed inference data:")
-        print(json.dumps(parsed, indent=2))
-    else:
-        print("❌ Inference failed!")
-        print(f"Error: {result['error']}")
+        for i, score in enumerate(scores):
+            if score > 0.5:  # Confidence threshold
+                detections.append({
+                    "class_id": int(classes[i]),
+                    "confidence": float(score),
+                    "bbox": [float(x) for x in boxes[i]]
+                })
+    
+    return detections
 
-# Run the test (uncomment to execute)
-# test_single_inference()
+def find_image_for_metadata(metadata_file: str) -> str:
+    """Find corresponding image file for metadata"""
+    with open(metadata_file, 'r') as f:
+        metadata = json.load(f)
+    
+    filename = metadata.get('fileName', '')
+    binary_id = metadata.get('id', '')
+    
+    # Try direct filename match
+    image_path = os.path.join(IMAGES_DIR, filename)
+    if os.path.exists(image_path):
+        return image_path
+    
+    # Try binary ID match
+    for file in os.listdir(IMAGES_DIR):
+        if binary_id in file and file.lower().endswith(('.jpg', '.jpeg', '.png')):
+            return os.path.join(IMAGES_DIR, file)
+    
+    return None
 
-# %% [markdown]
-# ## Process All Images
-
-# %%
-def process_all_images():
-    """Process all images through cloud inference"""
+def process_all_images(model_path: str):
+    """Process all images and return results"""
+    if not model_path or not os.path.exists(model_path):
+        print("❌ Model not found")
+        return []
+    
+    interpreter = load_model(model_path)
+    metadata_files = glob.glob(os.path.join(METADATA_DIR, "*.json"))
     results = []
     
+    print(f"Processing {len(metadata_files)} images...")
+    
     for metadata_file in metadata_files:
-        print(f"\nProcessing {os.path.basename(metadata_file)}...")
-        
         # Load metadata
-        metadata = load_metadata(metadata_file)
-        binary_data_id = get_binary_data_id(metadata)
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        
+        # Find corresponding image
+        image_path = find_image_for_metadata(metadata_file)
+        if not image_path:
+            continue
         
         # Run inference
-        inference_result = run_viam_inference(binary_data_id, VIAM_CONFIG)
+        detections = run_inference(image_path, interpreter)
         
-        # Store results
-        result_entry = {
-            "metadata_file": metadata_file,
-            "binary_data_id": binary_data_id,
-            "ground_truth": metadata.get('annotations', {}),
-            "inference_success": inference_result["success"],
-            "inference_output": inference_result["output"],
-            "inference_error": inference_result["error"]
-        }
+        # Extract ground truth burner labels
+        gt_burners = []
+        if 'annotations' in metadata:
+            for bbox in metadata['annotations'].get('bboxes', []):
+                if 'burner' in bbox.get('label', '').lower():
+                    gt_burners.append(bbox['label'])
         
-        if inference_result["success"]:
-            result_entry["parsed_inference"] = parse_inference_output(inference_result["output"])
+        # Check if model detected burners (assuming class_id mapping)
+        pred_burners = [det for det in detections if det['class_id'] == 1]  # Adjust class_id as needed
         
-        results.append(result_entry)
+        results.append({
+            "file": os.path.basename(metadata_file),
+            "image_path": image_path,
+            "ground_truth_burners": len(gt_burners),
+            "predicted_burners": len(pred_burners),
+            "detections": detections,
+            "has_burner_gt": len(gt_burners) > 0,
+            "has_burner_pred": len(pred_burners) > 0
+        })
+        
+        print(f"  {os.path.basename(image_path)}: GT={len(gt_burners)}, Pred={len(pred_burners)}")
     
     return results
 
-# Process all images (uncomment to execute)
-# all_results = process_all_images()
+# Process all images
+if model_path:
+    results = process_all_images(model_path)
+else:
+    print("⚠️  Skipping processing - no model available")
+    results = []
 
 # %% [markdown]
-# ## Compare Results with Ground Truth
+# ## Step 3: Check Burner Classification Accuracy
 
 # %%
-def compare_results(results: List[Dict[str, Any]]):
-    """Compare inference results with ground truth annotations"""
-    comparison_data = []
+def analyze_burner_performance(results: List[Dict]):
+    """Analyze burner detection performance"""
+    if not results:
+        print("No results to analyze")
+        return
     
+    total = len(results)
+    true_positives = sum(1 for r in results if r['has_burner_gt'] and r['has_burner_pred'])
+    false_positives = sum(1 for r in results if not r['has_burner_gt'] and r['has_burner_pred'])
+    false_negatives = sum(1 for r in results if r['has_burner_gt'] and not r['has_burner_pred'])
+    true_negatives = sum(1 for r in results if not r['has_burner_gt'] and not r['has_burner_pred'])
+    
+    accuracy = (true_positives + true_negatives) / total if total > 0 else 0
+    precision = true_positives / (true_positives + false_positives) if (true_positives + false_positives) > 0 else 0
+    recall = true_positives / (true_positives + false_negatives) if (true_positives + false_negatives) > 0 else 0
+    
+    print("\n=== Burner Classification Results ===")
+    print(f"Total images: {total}")
+    print(f"Accuracy: {accuracy:.2%}")
+    print(f"Precision: {precision:.2%}")
+    print(f"Recall: {recall:.2%}")
+    print(f"\nConfusion Matrix:")
+    print(f"  True Positives: {true_positives}")
+    print(f"  False Positives: {false_positives}")
+    print(f"  False Negatives: {false_negatives}")
+    print(f"  True Negatives: {true_negatives}")
+    
+    # Show misclassified examples
+    print(f"\nMisclassifications:")
     for result in results:
-        if not result["inference_success"]:
-            continue
-            
-        # Extract ground truth
-        gt_bboxes = result["ground_truth"].get("bboxes", [])
-        
-        # Extract inference results (you'll need to adapt this based on actual output format)
-        inference_data = result.get("parsed_inference", {})
-        
-        comparison_entry = {
-            "file": os.path.basename(result["metadata_file"]),
-            "ground_truth_count": len(gt_bboxes),
-            "ground_truth_labels": [bbox["label"] for bbox in gt_bboxes],
-            "inference_raw": result["inference_output"][:200] + "..." if result["inference_output"] else "",
-            # Add more fields as needed based on actual inference output format
-        }
-        
-        comparison_data.append(comparison_entry)
-    
-    return pd.DataFrame(comparison_data)
+        if result['has_burner_gt'] != result['has_burner_pred']:
+            status = "Missing burner" if result['has_burner_gt'] else "False detection"
+            print(f"  {result['file']}: {status}")
 
-# Compare results (uncomment after running inference)
-# if 'all_results' in locals():
-#     comparison_df = compare_results(all_results)
-#     print("\nComparison Results:")
-#     print(comparison_df.to_string())
+# Analyze results
+analyze_burner_performance(results)
 
 # %% [markdown]
 # ## Export Results
 
 # %%
-def export_results(results: List[Dict[str, Any]], output_path: str = "inference_results.json"):
-    """Export results to JSON file"""
-    with open(output_path, 'w') as f:
+if results:
+    output_file = "burner_classification_results.json"
+    with open(output_file, 'w') as f:
         json.dump(results, f, indent=2)
-    print(f"Results exported to {output_path}")
-
-# Export results (uncomment after running inference)
-# if 'all_results' in locals():
-#     export_results(all_results)
-
-# %% [markdown]
-# ## Next Steps
-# 
-# 1. **Create a .env file** with your actual Viam configuration:
-#    ```
-#    VIAM_MODEL_NAME=your-burner-detection-model
-#    VIAM_MODEL_ORG_ID=33604ab0-737c-4481-baa2-b526ccb00362
-#    VIAM_MODEL_VERSION=2024-XX-XXTXX-XX-XX
-#    VIAM_ORG_ID=33604ab0-737c-4481-baa2-b526ccb00362
-#    METADATA_DIR=metadata
-#    IMAGES_DIR=images
-#    ```
-# 2. **Install dependencies** (recommended to use a virtual environment):
-#    ```bash
-#    python3 -m venv venv
-#    source venv/bin/activate  # On Windows: venv\Scripts\activate
-#    pip install -r requirements.txt
-#    ```
-# 3. Run the test_single_inference() function to see the output format
-# 4. Adjust the parse_inference_output() function based on actual output format
-# 5. Process all images using process_all_images()
-# 6. Compare results with ground truth using compare_results()
+    print(f"\n📄 Results saved to {output_file}")
