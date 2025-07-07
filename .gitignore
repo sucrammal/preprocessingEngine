@@ -63,3 +63,6 @@ data/
 metadata/
 images/
 dataset.jsonl
+
+# models
+models/
