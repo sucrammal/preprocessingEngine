@@ -66,36 +66,39 @@ INFERENCE_CONFIDENCE = float(os.getenv("INFERENCE_CONFIDENCE", "0.5"))
 IOU_CONFIDENCE = float(os.getenv("IOU_CONFIDENCE", "0.5"))  # Fixed: was using INFERENCE_CONFIDENCE env var
 PREPROCESSING_METHOD = os.getenv("PREPROCESSING_METHOD", "simple")
 
-print("🔧 CONFIGURATION SUMMARY")
-print("=" * 60)
-print(f"Model: {VIAM_CONFIG['model_name']} v{VIAM_CONFIG['model_version']}")
-print(f"Data: {len(glob.glob(os.path.join(METADATA_DIR, '*.json')))} metadata files")
-print(f"Preprocessing method: {PREPROCESSING_METHOD}")
-print(f"Inference confidence threshold: {INFERENCE_CONFIDENCE}")
-print(f"IoU evaluation threshold: {IOU_CONFIDENCE}")
-print("=" * 60)
+# Configuration printing will only happen when script is run directly
+def print_configuration_summary():
+    """Print configuration summary"""
+    print("🔧 CONFIGURATION SUMMARY")
+    print("=" * 60)
+    print(f"Model: {VIAM_CONFIG['model_name']} v{VIAM_CONFIG['model_version']}")
+    print(f"Data: {len(glob.glob(os.path.join(METADATA_DIR, '*.json')))} metadata files")
+    print(f"Preprocessing method: {PREPROCESSING_METHOD}")
+    print(f"Inference confidence threshold: {INFERENCE_CONFIDENCE}")
+    print(f"IoU evaluation threshold: {IOU_CONFIDENCE}")
+    print("=" * 60)
 
-# Quick preview of ground truth format
-metadata_files_preview = glob.glob(os.path.join(METADATA_DIR, "*.json"))
-if metadata_files_preview:
-    print(f"\n📋 Sample ground truth format:")
-    with open(metadata_files_preview[0], 'r') as f:
-        sample_metadata = json.load(f)
-    if 'annotations' in sample_metadata:
-        for bbox in sample_metadata['annotations'].get('bboxes', [])[:3]:  # Show first 3
-            print(f"  - Label: '{bbox.get('label', 'N/A')}'")
-            print(f"    Normalized coordinates:")
-            print(f"      x_min: {bbox.get('xMinNormalized', 'N/A'):.3f}")
-            print(f"      y_min: {bbox.get('yMinNormalized', 'N/A'):.3f}") 
-            print(f"      x_max: {bbox.get('xMaxNormalized', 'N/A'):.3f}")
-            print(f"      y_max: {bbox.get('yMaxNormalized', 'N/A'):.3f}")
-            width = bbox.get('xMaxNormalized', 0) - bbox.get('xMinNormalized', 0)
-            height = bbox.get('yMaxNormalized', 0) - bbox.get('yMinNormalized', 0)
-            print(f"    Box dimensions (normalized):")
-            print(f"      width: {width:.3f}")
-            print(f"      height: {height:.3f}")
-    else:
-        print("  No annotations found in sample metadata")
+    # Quick preview of ground truth format
+    metadata_files_preview = glob.glob(os.path.join(METADATA_DIR, "*.json"))
+    if metadata_files_preview:
+        print(f"\n📋 Sample ground truth format:")
+        with open(metadata_files_preview[0], 'r') as f:
+            sample_metadata = json.load(f)
+        if 'annotations' in sample_metadata:
+            for bbox in sample_metadata['annotations'].get('bboxes', [])[:3]:  # Show first 3
+                print(f"  - Label: '{bbox.get('label', 'N/A')}'")
+                print(f"    Normalized coordinates:")
+                print(f"      x_min: {bbox.get('xMinNormalized', 'N/A'):.3f}")
+                print(f"      y_min: {bbox.get('yMinNormalized', 'N/A'):.3f}") 
+                print(f"      x_max: {bbox.get('xMaxNormalized', 'N/A'):.3f}")
+                print(f"      y_max: {bbox.get('yMaxNormalized', 'N/A'):.3f}")
+                width = bbox.get('xMaxNormalized', 0) - bbox.get('xMinNormalized', 0)
+                height = bbox.get('yMaxNormalized', 0) - bbox.get('yMinNormalized', 0)
+                print(f"    Box dimensions (normalized):")
+                print(f"      width: {width:.3f}")
+                print(f"      height: {height:.3f}")
+        else:
+            print("  No annotations found in sample metadata")
 
 
 # ### Preprocessing and data checks: 
@@ -532,36 +535,6 @@ def visualize_dataset_samples(df: pd.DataFrame, num_samples: int = 6):
     plt.show()
 
 
-# In[ ]:
-
-
-# Create the dataset
-print("\n🚀 STEP 2: DATASET CREATION")
-print("=" * 60)
-
-# For testing, limit to first 100 images - remove this for full dataset
-# dataset_df = create_dataset_dataframe(max_images=100)
-dataset_df = create_dataset_dataframe()
-
-if not dataset_df.empty:
-    # Visualize samples
-    visualize_dataset_samples(dataset_df)
-    
-    # Show preprocessing effects on a sample
-    if len(dataset_df) > 0:
-        sample_image = dataset_df.iloc[0]['image']
-        print(f"\n🔍 PREPROCESSING EFFECTS ON SAMPLE IMAGE")
-        print(f"Original image size: {sample_image.shape[:2]} (height x width)")
-        print(f"Current preprocessing method: {PREPROCESSING_METHOD}")
-        visualize_preprocessing_effects(sample_image)
-        visualize_preprocessing_detail_comparison(sample_image)
-
-
-# ## Setup Model
-
-# In[ ]:
-
-
 def download_model():
     """Download TFLite model from Viam"""
     import tarfile
@@ -622,11 +595,6 @@ def download_model():
         return None
 
 
-# ### Load in model
-
-# In[ ]:
-
-
 def load_model(model_path: str):
     """Load TFLite model and return interpreter"""
     print(f"\n🔄 LOADING MODEL: {model_path}")
@@ -657,9 +625,6 @@ def load_model(model_path: str):
     return interpreter
 
 
-# In[ ]:
-
-
 def get_model_input_size(interpreter) -> Optional[Tuple[int, int]]:
     """
     Get the expected input size from the model interpreter
@@ -677,33 +642,6 @@ def get_model_input_size(interpreter) -> Optional[Tuple[int, int]]:
             return None  # Variable input size
     else:
         return None  # Non-standard input shape
-
-
-# In[ ]:
-
-
-print("\n🚀 STEP 3: MODEL LOADING")
-print("=" * 60)
-
-model_path = download_model()
-if model_path:
-    model_interpreter = load_model(model_path)
-    
-    # Show what preprocessing will be used
-    expected_size = get_model_input_size(model_interpreter)
-    if expected_size:
-        print(f"🔧 Images will be resized to {expected_size[0]}x{expected_size[1]} for inference")
-    else:
-        print(f"🔧 Images will keep their original size for inference")
-        
-else:
-    print("❌ No model available - skipping inference steps")
-    model_interpreter = None
-
-
-# ### Infernece: Call the model!
-
-# In[ ]:
 
 
 def analyze_model_outputs(outputs: Dict[str, np.ndarray], confidence_threshold: float = 0.1) -> None:
@@ -752,9 +690,6 @@ def analyze_model_outputs(outputs: Dict[str, np.ndarray], confidence_threshold: 
                     ymin, xmin, ymax, xmax = boxes[i]
                     score = scores_flat[i]
                     print(f"    Box {i}: [{ymin:.3f}, {xmin:.3f}, {ymax:.3f}, {xmax:.3f}] (score: {score:.3f})")
-
-
-# In[ ]:
 
 
 def run_single_inference(image_array: np.ndarray, interpreter, 
@@ -849,9 +784,6 @@ def run_single_inference(image_array: np.ndarray, interpreter,
     return detections
 
 
-# In[ ]:
-
-
 def test_inference_on_single_image(df: pd.DataFrame, interpreter, 
                                    image_index: int = 0, 
                                    confidence_threshold: float = 0.3,
@@ -901,21 +833,6 @@ def test_inference_on_single_image(df: pd.DataFrame, interpreter,
     return detections
 
 
-# In[ ]:
-
-
-test_inference_on_single_image(
-       dataset_df, 
-       model_interpreter, 
-       image_index=0,
-       confidence_threshold=INFERENCE_CONFIDENCE,  # Use global variable
-       debug=True
-   )
-
-
-# In[ ]:
-
-
 def run_inference_on_dataframe(df: pd.DataFrame, interpreter, 
                               normalization_method: str = "simple",
                               confidence_threshold: float = 0.5,
@@ -953,6 +870,7 @@ def run_inference_on_dataframe(df: pd.DataFrame, interpreter,
     print(f"   Average predicted burners per image: {df_with_inference['num_inferred_burners'].mean():.2f}")
     
     return df_with_inference
+
 
 def visualize_inference_results(df: pd.DataFrame, num_samples: int = 6):
     """Visualize inference results"""
@@ -1009,24 +927,6 @@ def visualize_inference_results(df: pd.DataFrame, num_samples: int = 6):
     plt.tight_layout()
     plt.show()
 
-# Run inference if model is available
-if model_interpreter is not None:
-    print("\n🚀 STEP 4: INFERENCE")
-    print("=" * 60)
-
-    dataset_df = run_inference_on_dataframe(dataset_df, model_interpreter, PREPROCESSING_METHOD, INFERENCE_CONFIDENCE)
-    
-    # Visualize results
-    if not dataset_df.empty:
-        visualize_inference_results(dataset_df)
-else:
-    print("\n⚠️  SKIPPING STEP 4: No model available")
-
-
-# ## Evaluation: Simple presence/absence
-
-# In[ ]:
-
 
 def evaluate_presence_absence(df: pd.DataFrame) -> Dict[str, float]:
     """
@@ -1077,11 +977,6 @@ def evaluate_presence_absence(df: pd.DataFrame) -> Dict[str, float]:
     return results
 
 
-# ## Evaluation: Intersection over Union (IOU)
-
-# In[ ]:
-
-
 def calculate_iou(box1: Tuple[float, float, float, float], 
                  box2: Tuple[float, float, float, float]) -> float:
     """Calculate IoU between two bounding boxes"""
@@ -1105,6 +1000,7 @@ def calculate_iou(box1: Tuple[float, float, float, float],
     union = area1 + area2 - intersection
     
     return intersection / union if union > 0 else 0.0
+
 
 def evaluate_iou_matching(df: pd.DataFrame, iou_threshold: float = 0.5) -> Dict[str, float]:
     """
@@ -1176,9 +1072,6 @@ def evaluate_iou_matching(df: pd.DataFrame, iou_threshold: float = 0.5) -> Dict[
     return results
 
 
-# In[ ]:
-
-
 def convert_numpy_types(obj):
     """
     Recursively convert numpy types to Python native types for JSON serialization
@@ -1201,6 +1094,7 @@ def convert_numpy_types(obj):
         return obj.tolist()
     else:
         return obj
+
 
 def visualize_evaluation_results(presence_results: Dict, iou_results: Dict):
     """Visualize evaluation results"""
@@ -1239,82 +1133,150 @@ def visualize_evaluation_results(presence_results: Dict, iou_results: Dict):
     plt.tight_layout()
     plt.show()
 
-# Run evaluation if we have inference results
-if model_interpreter is not None and 'inferred_burner_bboxes' in dataset_df.columns:
-    print("\n🚀 STEP 5: EVALUATION")
+
+def main():
+    """Main function to run the preprocessing pipeline"""
+    # Print configuration summary
+    print_configuration_summary()
+    
+    # Create the dataset
+    print("\n🚀 STEP 2: DATASET CREATION")
     print("=" * 60)
-    
-    # Method 1: Presence/Absence
-    presence_results = evaluate_presence_absence(dataset_df)
-    
-    # Method 2: IoU Matching
-    iou_results = evaluate_iou_matching(dataset_df, iou_threshold=IOU_CONFIDENCE)
-    
-    # Visualize results
-    visualize_evaluation_results(presence_results, iou_results)
-    
-    # Save results
-    results_summary = {
-        'presence_absence': presence_results,
-        'iou_matching': iou_results,
-        'dataset_info': {
-            'total_images': len(dataset_df),
-            'images_with_burners': len(dataset_df[dataset_df['has_burners']]),
-            'total_gt_burners': dataset_df['num_burners'].sum(),
-            'total_predicted_burners': dataset_df['num_inferred_burners'].sum()
+
+    # For testing, limit to first 100 images - remove this for full dataset
+    # dataset_df = create_dataset_dataframe(max_images=100)
+    dataset_df = create_dataset_dataframe()
+
+    if not dataset_df.empty:
+        # Visualize samples
+        visualize_dataset_samples(dataset_df)
+        
+        # Show preprocessing effects on a sample
+        if len(dataset_df) > 0:
+            sample_image = dataset_df.iloc[0]['image']
+            print(f"\n🔍 PREPROCESSING EFFECTS ON SAMPLE IMAGE")
+            print(f"Original image size: {sample_image.shape[:2]} (height x width)")
+            print(f"Current preprocessing method: {PREPROCESSING_METHOD}")
+            visualize_preprocessing_effects(sample_image)
+            visualize_preprocessing_detail_comparison(sample_image)
+
+    # Model loading
+    print("\n🚀 STEP 3: MODEL LOADING")
+    print("=" * 60)
+
+    model_path = download_model()
+    if model_path:
+        model_interpreter = load_model(model_path)
+        
+        # Show what preprocessing will be used
+        expected_size = get_model_input_size(model_interpreter)
+        if expected_size:
+            print(f"🔧 Images will be resized to {expected_size[0]}x{expected_size[1]} for inference")
+        else:
+            print(f"🔧 Images will keep their original size for inference")
+            
+    else:
+        print("❌ No model available - skipping inference steps")
+        model_interpreter = None
+
+    # Test inference on single image
+    if model_interpreter is not None:
+        test_inference_on_single_image(
+            dataset_df, 
+            model_interpreter, 
+            image_index=0,
+            confidence_threshold=INFERENCE_CONFIDENCE,  # Use global variable
+            debug=True
+        )
+
+    # Run inference if model is available
+    if model_interpreter is not None:
+        print("\n🚀 STEP 4: INFERENCE")
+        print("=" * 60)
+
+        dataset_df = run_inference_on_dataframe(dataset_df, model_interpreter, PREPROCESSING_METHOD, INFERENCE_CONFIDENCE)
+        
+        # Visualize results
+        if not dataset_df.empty:
+            visualize_inference_results(dataset_df)
+    else:
+        print("\n⚠️  SKIPPING STEP 4: No model available")
+
+    # Run evaluation if we have inference results
+    if model_interpreter is not None and 'inferred_burner_bboxes' in dataset_df.columns:
+        print("\n🚀 STEP 5: EVALUATION")
+        print("=" * 60)
+        
+        # Method 1: Presence/Absence
+        presence_results = evaluate_presence_absence(dataset_df)
+        
+        # Method 2: IoU Matching
+        iou_results = evaluate_iou_matching(dataset_df, iou_threshold=IOU_CONFIDENCE)
+        
+        # Visualize results
+        visualize_evaluation_results(presence_results, iou_results)
+        
+        # Save results
+        results_summary = {
+            'presence_absence': presence_results,
+            'iou_matching': iou_results,
+            'dataset_info': {
+                'total_images': len(dataset_df),
+                'images_with_burners': len(dataset_df[dataset_df['has_burners']]),
+                'total_gt_burners': dataset_df['num_burners'].sum(),
+                'total_predicted_burners': dataset_df['num_inferred_burners'].sum()
+            }
         }
-    }
-    
-    # Convert numpy types to Python native types for JSON serialization
-    results_summary_serializable = convert_numpy_types(results_summary)
-    
-    with open('evaluation_results.json', 'w') as f:
-        json.dump(results_summary_serializable, f, indent=2)
-    
-    print(f"\n💾 Results saved to 'evaluation_results.json'")
-    
-else:
-    print("\n⚠️  SKIPPING STEP 5: No inference results available")
+        
+        # Convert numpy types to Python native types for JSON serialization
+        results_summary_serializable = convert_numpy_types(results_summary)
+        
+        with open('evaluation_results.json', 'w') as f:
+            json.dump(results_summary_serializable, f, indent=2)
+        
+        print(f"\n💾 Results saved to 'evaluation_results.json'")
+        
+    else:
+        print("\n⚠️  SKIPPING STEP 5: No inference results available")
+
+    # Final Summary
+    print("\n🏁 PIPELINE COMPLETE")
+    print("=" * 60)
+
+    if not dataset_df.empty:
+        print(f"📊 Final Dataset Summary:")
+        print(f"   Total images processed: {len(dataset_df)}")
+        print(f"   Images with ground truth burners: {len(dataset_df[dataset_df['has_burners']])}")
+        print(f"   Total ground truth burners: {dataset_df['num_burners'].sum()}")
+        
+        if 'inferred_burner_bboxes' in dataset_df.columns:
+            print(f"   Images with predicted burners: {len(dataset_df[dataset_df['has_inferred_burners']])}")
+            print(f"   Total predicted burners: {dataset_df['num_inferred_burners'].sum()}")
+        
+        # Save DataFrame
+        dataset_df.to_pickle('burner_dataset_complete.pkl')
+        print(f"\n💾 Complete dataset saved to 'burner_dataset_complete.pkl'")
+        
+        # Create summary CSV
+        summary_columns = ['image_name', 'num_burners', 'has_burners']
+        if 'inferred_burner_bboxes' in dataset_df.columns:
+            summary_columns.extend(['num_inferred_burners', 'has_inferred_burners'])
+        
+        summary_df = dataset_df[summary_columns]
+        summary_df.to_csv('dataset_summary.csv', index=False)
+        print(f"📋 Summary saved to 'dataset_summary.csv'")
+        
+    else:
+        print("❌ No dataset created")
+
+    print(f"\n✅ All steps completed successfully!")
+    print(f"📁 Output files:")
+    print(f"   - burner_dataset_complete.pkl (complete dataset)")
+    print(f"   - dataset_summary.csv (summary statistics)")
+    if model_interpreter is not None:
+        print(f"   - evaluation_results.json (evaluation metrics)")
 
 
-# ## Final Summary
-
-# In[ ]:
-
-
-print("\n🏁 PIPELINE COMPLETE")
-print("=" * 60)
-
-if not dataset_df.empty:
-    print(f"📊 Final Dataset Summary:")
-    print(f"   Total images processed: {len(dataset_df)}")
-    print(f"   Images with ground truth burners: {len(dataset_df[dataset_df['has_burners']])}")
-    print(f"   Total ground truth burners: {dataset_df['num_burners'].sum()}")
-    
-    if 'inferred_burner_bboxes' in dataset_df.columns:
-        print(f"   Images with predicted burners: {len(dataset_df[dataset_df['has_inferred_burners']])}")
-        print(f"   Total predicted burners: {dataset_df['num_inferred_burners'].sum()}")
-    
-    # Save DataFrame
-    dataset_df.to_pickle('burner_dataset_complete.pkl')
-    print(f"\n💾 Complete dataset saved to 'burner_dataset_complete.pkl'")
-    
-    # Create summary CSV
-    summary_columns = ['image_name', 'num_burners', 'has_burners']
-    if 'inferred_burner_bboxes' in dataset_df.columns:
-        summary_columns.extend(['num_inferred_burners', 'has_inferred_burners'])
-    
-    summary_df = dataset_df[summary_columns]
-    summary_df.to_csv('dataset_summary.csv', index=False)
-    print(f"📋 Summary saved to 'dataset_summary.csv'")
-    
-else:
-    print("❌ No dataset created")
-
-print(f"\n✅ All steps completed successfully!")
-print(f"📁 Output files:")
-print(f"   - burner_dataset_complete.pkl (complete dataset)")
-print(f"   - dataset_summary.csv (summary statistics)")
-if model_interpreter is not None:
-    print(f"   - evaluation_results.json (evaluation metrics)")
+if __name__ == "__main__":
+    main()
 
