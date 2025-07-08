@@ -44,6 +44,7 @@ import matplotlib.patches as patches
 from scipy import ndimage
 import cv2
 from scipy import ndimage
+from tqdm import tqdm
 
 # Load environment variables
 load_dotenv()
@@ -440,7 +441,8 @@ def create_dataset_dataframe(max_images: Optional[int] = None) -> pd.DataFrame:
     
     print(f"📋 Processing {len(metadata_files)} metadata files...")
     
-    for i, metadata_file in enumerate(metadata_files):
+    # Use tqdm for progress bar
+    for i, metadata_file in enumerate(tqdm(metadata_files, desc="Loading dataset", unit="file")):
         try:
             # Load metadata
             with open(metadata_file, 'r') as f:
@@ -464,10 +466,6 @@ def create_dataset_dataframe(max_images: Optional[int] = None) -> pd.DataFrame:
             image_paths.append(image_path)
             images.append(image_array)
             burner_bboxes.append(bboxes)
-            
-            # Progress update
-            if (i + 1) % 500 == 0:
-                print(f"   Progress: {i + 1}/{len(metadata_files)} images processed")
                 
         except Exception as e:
             print(f"❌ Error processing {os.path.basename(metadata_file)}: {e}")
@@ -930,17 +928,14 @@ def run_inference_on_dataframe(df: pd.DataFrame, interpreter,
     
     inferred_bboxes = []
     
-    for i, row in df.iterrows():
+    # Use tqdm for progress bar
+    for i, row in tqdm(df.iterrows(), total=len(df), desc="Processing images", unit="img"):
         try:
             # Only enable debug for the first image to avoid spam
             debug_this_image = debug and i == 0
             detections = run_single_inference(row['image'], interpreter, normalization_method, 
                                            confidence_threshold, debug_this_image)
             inferred_bboxes.append(detections)
-            
-            # Progress update
-            if (i + 1) % 25 == 0:
-                print(f"   Progress: {i + 1}/{len(df)} images processed")
                 
         except Exception as e:
             print(f"❌ Error processing {row['image_name']}: {e}")
