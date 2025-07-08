@@ -66,3 +66,6 @@ dataset.jsonl
 
 # models
 models/
+evaluation_results.json
+dataset_summary.csv
+burner_dataset_complete.pkl

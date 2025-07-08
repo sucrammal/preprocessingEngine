@@ -1,23 +1,34 @@
-# %% [markdown]
-# # Burner Detection Pipeline - Step by Step
-# 
-# **Pipeline Overview:**
-# 1. **Preprocessing**: Load and preprocess all images
-# 2. **Dataset Creation**: Create DataFrame with images and ground truth
-# 3. **Model Loading**: Download and load the TFLite model
-# 4. **Inference**: Run inference once on all images
-# 5. **Evaluation**: Analyze results using presence/absence and IoU methods
-# 6. **Visualization**: Visual inspection at each step
-# 
-# **Note on Input Sizes:**
-# - The model input size is determined dynamically from the model itself
-# - If the model has fixed input dimensions (e.g., 640x640), images will be resized
-# - If the model accepts variable input sizes (shape contains -1), original sizes are preserved
+#!/usr/bin/env python
+# coding: utf-8
 
-# %% [markdown]
-# ## Setup and Configuration
+# # Burner Detection Preprocessing Engine
+# 
+# **Pipeline Overview:** Download model → Process images → Evaluate burner classification
+# 
+# **Key Features:**
+# 1. **Simple Evaluation**: Presence/absence of burners (binary classification)
+# 2. **Advanced Evaluation**: Spatial IoU-based matching (object detection metrics)  
+# 3. **Preprocessing Comparison**: Test different normalization techniques for lighting variations
+# 4. **Visualization Demo**: Visual walkthrough of pipeline on sample image
+# 
+# **Preprocessing Methods Available:**
+# - **Simple**: Standard 0-1 normalization (baseline)
+# - **GCN**: Global Contrast Normalization (handles overall brightness differences)
+# - **LCN**: Local Contrast Normalization (handles local lighting/shadow variations)
 
-# %%
+# ## Setup
+
+# In your terminal, use the following commands to create a python3.11 kernel. Select the kernel "Python 3.11" at the top of the notebook to use it:
+# 
+# ```
+# conda create -n my_env python=3.11 ipykernel
+# conda activate my_env
+# python -m ipykernel install --user --name=my_env --display-name="Python 3.11"   
+# ```
+
+# In[ ]:
+
+
 import json
 import os
 import subprocess
@@ -32,6 +43,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from scipy import ndimage
 import cv2
+from scipy import ndimage
 
 # Load environment variables
 load_dotenv()
@@ -47,58 +59,50 @@ METADATA_DIR = os.getenv("METADATA_DIR", "metadata")
 IMAGES_DIR = os.getenv("IMAGES_DIR", "data")
 MODEL_DIR = os.getenv("MODEL_DIR", "models")
 
-# Model input size - will be determined dynamically from the model
 MODEL_INPUT_SIZE = None
 
-print("🔧 CONFIGURATION")
+INFERENCE_CONFIDENCE = float(os.getenv("INFERENCE_CONFIDENCE", "0.5"))
+IOU_CONFIDENCE = float(os.getenv("IOU_CONFIDENCE", "0.5"))  # Fixed: was using INFERENCE_CONFIDENCE env var
+PREPROCESSING_METHOD = os.getenv("PREPROCESSING_METHOD", "simple")
+
+print("🔧 CONFIGURATION SUMMARY")
 print("=" * 60)
 print(f"Model: {VIAM_CONFIG['model_name']} v{VIAM_CONFIG['model_version']}")
-print(f"Data Directory: {IMAGES_DIR}")
-print(f"Metadata Directory: {METADATA_DIR}")
-print(f"Model Directory: {MODEL_DIR}")
-print(f"Model Input Size: Dynamic (determined from model)")
-print(f"Available metadata files: {len(glob.glob(os.path.join(METADATA_DIR, '*.json')))}")
+print(f"Data: {len(glob.glob(os.path.join(METADATA_DIR, '*.json')))} metadata files")
+print(f"Preprocessing method: {PREPROCESSING_METHOD}")
+print(f"Inference confidence threshold: {INFERENCE_CONFIDENCE}")
+print(f"IoU evaluation threshold: {IOU_CONFIDENCE}")
+print("=" * 60)
 
-# %% [markdown]
-# ## Step 1: Preprocessing Functions
+# Quick preview of ground truth format
+metadata_files_preview = glob.glob(os.path.join(METADATA_DIR, "*.json"))
+if metadata_files_preview:
+    print(f"\n📋 Sample ground truth format:")
+    with open(metadata_files_preview[0], 'r') as f:
+        sample_metadata = json.load(f)
+    if 'annotations' in sample_metadata:
+        for bbox in sample_metadata['annotations'].get('bboxes', [])[:3]:  # Show first 3
+            print(f"  - Label: '{bbox.get('label', 'N/A')}'")
+            print(f"    Normalized coordinates:")
+            print(f"      x_min: {bbox.get('xMinNormalized', 'N/A'):.3f}")
+            print(f"      y_min: {bbox.get('yMinNormalized', 'N/A'):.3f}") 
+            print(f"      x_max: {bbox.get('xMaxNormalized', 'N/A'):.3f}")
+            print(f"      y_max: {bbox.get('yMaxNormalized', 'N/A'):.3f}")
+            width = bbox.get('xMaxNormalized', 0) - bbox.get('xMinNormalized', 0)
+            height = bbox.get('yMaxNormalized', 0) - bbox.get('yMinNormalized', 0)
+            print(f"    Box dimensions (normalized):")
+            print(f"      width: {width:.3f}")
+            print(f"      height: {height:.3f}")
+    else:
+        print("  No annotations found in sample metadata")
 
-# %%
-def preprocess_image(image_array: np.ndarray, target_size: Optional[Tuple[int, int]] = None,
-                    normalization_method: str = "simple") -> np.ndarray:
-    """
-    Preprocess image array for model input
-    
-    Args:
-        image_array: Input image as numpy array
-        target_size: Target size for model input (None to keep original size)
-        normalization_method: 'simple', 'gcn', or 'lcn'
-    
-    Returns:
-        Preprocessed image array ready for model input
-    """
-    # Resize image if target_size is specified
-    if target_size is not None:
-        image_pil = Image.fromarray(image_array)
-        image_resized = image_pil.resize(target_size)
-        image_array = np.array(image_resized, dtype=np.float32)
-    else:
-        # Keep original size
-        image_array = np.array(image_array, dtype=np.float32)
-    
-    # Apply normalization
-    if normalization_method == "simple":
-        # Simple 0-1 normalization
-        normalized = image_array / 255.0
-    elif normalization_method == "gcn":
-        # Global Contrast Normalization
-        normalized = apply_global_contrast_normalization(image_array)
-    elif normalization_method == "lcn":
-        # Local Contrast Normalization
-        normalized = apply_local_contrast_normalization(image_array)
-    else:
-        raise ValueError(f"Unknown normalization method: {normalization_method}")
-    
-    return normalized
+
+# ### Preprocessing and data checks: 
+# - Select between simple normalization (simple), local contrast normalization (LCN), and global contrast normalization (GCN).
+# - Check if all bounding box keys are present
+
+# In[ ]:
+
 
 def apply_global_contrast_normalization(image_array: np.ndarray, epsilon: float = 1e-8) -> np.ndarray:
     """
@@ -135,6 +139,47 @@ def apply_local_contrast_normalization(image_array: np.ndarray, window_size: int
         channel_normalized = (channel_data - local_mean) / local_std
         channel_normalized = (channel_normalized - channel_normalized.min()) / (channel_normalized.max() - channel_normalized.min() + epsilon)
         normalized[:, :, channel] = channel_normalized
+    
+    return normalized
+
+
+# In[ ]:
+
+
+def preprocess_image(image_array: np.ndarray, target_size: Optional[Tuple[int, int]] = None,
+                    normalization_method: str = "simple") -> np.ndarray:
+    """
+    Preprocess image array for model input
+    
+    Args:
+        image_array: Input image as numpy array
+        target_size: Target size for model input (None to keep original size)
+        normalization_method: 'simple', 'gcn', or 'lcn'
+    
+    Returns:
+        Preprocessed image array ready for model input
+    """
+    # Resize image if target_size is specified
+    if target_size is not None:
+        image_pil = Image.fromarray(image_array)
+        image_resized = image_pil.resize(target_size)
+        image_array = np.array(image_resized, dtype=np.float32)
+    else:
+        # Keep original size
+        image_array = np.array(image_array, dtype=np.float32)
+    
+    # Apply normalization
+    if normalization_method == "simple":
+        # Simple 0-1 normalization
+        normalized = image_array / 255.0
+    elif normalization_method == "gcn":
+        # Global Contrast Normalization
+        normalized = apply_global_contrast_normalization(image_array)
+    elif normalization_method == "lcn":
+        # Local Contrast Normalization
+        normalized = apply_local_contrast_normalization(image_array)
+    else:
+        raise ValueError(f"Unknown normalization method: {normalization_method}")
     
     return normalized
 
@@ -296,20 +341,23 @@ def visualize_preprocessing_detail_comparison(image_array: np.ndarray,
 
 print("✅ Preprocessing functions defined")
 
-# %% [markdown]
-# ## Step 2: Dataset Creation
 
-# %%
-def find_image_for_metadata(metadata_file: str) -> Optional[str]:
+# ## Data validation and cleanup
+
+# In[ ]:
+
+
+def find_image_for_metadata(metadata_file: str) -> str:
     """Find corresponding image file for metadata"""
     with open(metadata_file, 'r') as f:
         metadata = json.load(f)
     
     filename = metadata.get('fileName', '')
+    fileExt = metadata.get('fileExt','')
     binary_id = metadata.get('id', '')
     
     # Try direct filename match
-    image_path = os.path.join(IMAGES_DIR, filename)
+    image_path = os.path.join(IMAGES_DIR, filename) + fileExt
     if os.path.exists(image_path):
         return image_path
     
@@ -345,6 +393,23 @@ def extract_burner_bounding_boxes(metadata: Dict) -> List[Tuple[float, float, fl
                     burner_boxes.append(burner_box)
     
     return burner_boxes
+
+def is_valid_bbox(bbox: Dict) -> bool:
+    """Check if a bounding box has all required coordinate keys"""
+    required_keys = ["xMinNormalized", "yMinNormalized", "xMaxNormalized", "yMaxNormalized"]
+    return all(key in bbox for key in required_keys)
+
+
+# In[ ]:
+
+
+print(find_image_for_metadata("metadata/2024-10-23T17_50_47.707Z_BLOND-Design-Agency-London-Impulse-Stovetop-Banner.json"))
+
+
+# # Dataset Creation
+
+# In[ ]:
+
 
 def create_dataset_dataframe(max_images: Optional[int] = None) -> pd.DataFrame:
     """
@@ -468,12 +533,17 @@ def visualize_dataset_samples(df: pd.DataFrame, num_samples: int = 6):
     plt.tight_layout()
     plt.show()
 
+
+# In[ ]:
+
+
 # Create the dataset
 print("\n🚀 STEP 2: DATASET CREATION")
 print("=" * 60)
 
 # For testing, limit to first 100 images - remove this for full dataset
-dataset_df = create_dataset_dataframe(max_images=100)
+# dataset_df = create_dataset_dataframe(max_images=100)
+dataset_df = create_dataset_dataframe()
 
 if not dataset_df.empty:
     # Visualize samples
@@ -484,17 +554,16 @@ if not dataset_df.empty:
         sample_image = dataset_df.iloc[0]['image']
         print(f"\n🔍 PREPROCESSING EFFECTS ON SAMPLE IMAGE")
         print(f"Original image size: {sample_image.shape[:2]} (height x width)")
-        
-        # Show full comparison with histograms and statistics
-        visualize_preprocessing_effects(sample_image, target_size=None)
-        
-        # Show detailed comparison on cropped region
+        print(f"Current preprocessing method: {PREPROCESSING_METHOD}")
+        visualize_preprocessing_effects(sample_image)
         visualize_preprocessing_detail_comparison(sample_image)
 
-# %% [markdown]
-# ## Step 3: Model Loading
 
-# %%
+# ## Setup Model
+
+# In[ ]:
+
+
 def download_model():
     """Download TFLite model from Viam"""
     import tarfile
@@ -518,16 +587,18 @@ def download_model():
     
     if result.returncode == 0:
         print("✅ Model downloaded successfully")
+        model_path_tflite = os.path.join(MODEL_DIR, VIAM_CONFIG["model_version"], VIAM_CONFIG["model_name"]) + ".tflite"
+        model_path_targz = os.path.join(MODEL_DIR, VIAM_CONFIG["model_version"], VIAM_CONFIG["model_name"]) + ".tar.gz"
         
-        # Look for existing .tflite files
-        tflite_files = glob.glob(os.path.join(MODEL_DIR, "**/*.tflite"), recursive=True)
+        # Look for existing .tflite file in directory
+        tflite_files = glob.glob(model_path_tflite, recursive=True)
         if tflite_files:
             model_path = tflite_files[0]
             print(f"✅ Model found: {model_path}")
             return model_path
         
         # Extract .tar.gz files if needed
-        tar_files = glob.glob(os.path.join(MODEL_DIR, "**/*.tar.gz"), recursive=True)
+        tar_files = glob.glob(model_path_targz, recursive=True)
         if tar_files:
             for tar_file in tar_files:
                 print(f"📦 Extracting {tar_file}...")
@@ -540,7 +611,7 @@ def download_model():
                     continue
             
             # Look for .tflite files after extraction
-            tflite_files = glob.glob(os.path.join(MODEL_DIR, "**/*.tflite"), recursive=True)
+            tflite_files = glob.glob(model_path_targz, recursive=True)
             if tflite_files:
                 model_path = tflite_files[0]
                 print(f"✅ Model ready: {model_path}")
@@ -551,6 +622,12 @@ def download_model():
     else:
         print(f"❌ Download failed: {result.stderr}")
         return None
+
+
+# ### Load in model
+
+# In[ ]:
+
 
 def load_model(model_path: str):
     """Load TFLite model and return interpreter"""
@@ -581,6 +658,10 @@ def load_model(model_path: str):
     
     return interpreter
 
+
+# In[ ]:
+
+
 def get_model_input_size(interpreter) -> Optional[Tuple[int, int]]:
     """
     Get the expected input size from the model interpreter
@@ -599,7 +680,10 @@ def get_model_input_size(interpreter) -> Optional[Tuple[int, int]]:
     else:
         return None  # Non-standard input shape
 
-# Download and load model
+
+# In[ ]:
+
+
 print("\n🚀 STEP 3: MODEL LOADING")
 print("=" * 60)
 
@@ -618,12 +702,67 @@ else:
     print("❌ No model available - skipping inference steps")
     model_interpreter = None
 
-# %% [markdown]
-# ## Step 4: Inference
 
-# %%
+# ### Infernece: Call the model!
+
+# In[ ]:
+
+
+def analyze_model_outputs(outputs: Dict[str, np.ndarray], confidence_threshold: float = 0.1) -> None:
+    """
+    Analyze and print detailed information about model outputs
+    
+    Args:
+        outputs: Dictionary of model outputs
+        confidence_threshold: Minimum confidence to show detections
+    """
+    print("\n🔍 MODEL OUTPUT ANALYSIS")
+    print("=" * 60)
+    
+    for name, tensor in outputs.items():
+        print(f"\nTensor: {name}")
+        print(f"  Shape: {tensor.shape}")
+        print(f"  Dtype: {tensor.dtype}")
+        
+        if name == 'StatefulPartitionedCall:0':  # Classes
+            print(f"  Classes: {np.unique(tensor)}")
+            print(f"  All classes: {tensor.flatten()[:10]}...")  # Show first 10
+            
+        elif name == 'StatefulPartitionedCall:1':  # Scores
+            scores = tensor.squeeze() if tensor.ndim > 1 else tensor
+            print(f"  Score range: {scores.min():.4f} - {scores.max():.4f}")
+            print(f"  Scores > {confidence_threshold}: {np.sum(scores > confidence_threshold)}")
+            high_scores = scores[scores > confidence_threshold]
+            if len(high_scores) > 0:
+                print(f"  High scores: {high_scores[:5]}...")  # Show first 5 high scores
+                
+        elif name == 'StatefulPartitionedCall:2':  # Number of detections
+            print(f"  Number of detections: {tensor}")
+            
+        elif name == 'StatefulPartitionedCall:3':  # Bounding boxes
+            boxes = tensor.squeeze(1) if tensor.ndim == 3 else tensor
+            print(f"  Bounding box format: [ymin, xmin, ymax, xmax]")
+            print(f"  Box coordinate range: [{boxes.min():.4f}, {boxes.max():.4f}]")
+            
+            # Show boxes for high-confidence detections
+            scores = outputs.get('StatefulPartitionedCall:1', np.array([]))
+            if scores.size > 0:
+                scores_flat = scores.squeeze() if scores.ndim > 1 else scores
+                high_conf_indices = np.where(scores_flat > confidence_threshold)[0]
+                print(f"  High-confidence boxes ({len(high_conf_indices)} detections):")
+                for i in high_conf_indices[:5]:  # Show first 5
+                    ymin, xmin, ymax, xmax = boxes[i]
+                    score = scores_flat[i]
+                    print(f"    Box {i}: [{ymin:.3f}, {xmin:.3f}, {ymax:.3f}, {xmax:.3f}] (score: {score:.3f})")
+
+
+# In[ ]:
+
+
 def run_single_inference(image_array: np.ndarray, interpreter, 
-                        normalization_method: str = "simple") -> List[Tuple[float, float, float, float, float]]:
+                        normalization_method: str = "simple", 
+                        confidence_threshold: float = 0.5,
+                        debug: bool = False) -> List[Tuple[float, float, float, float, float]]:
     """
     Run inference on a single image
     
@@ -635,6 +774,8 @@ def run_single_inference(image_array: np.ndarray, interpreter,
         image_array: Input image as numpy array
         interpreter: TFLite interpreter
         normalization_method: Preprocessing method ('simple', 'gcn', 'lcn')
+        confidence_threshold: Minimum confidence score for detections
+        debug: If True, print detailed analysis of model outputs
     
     Returns:
         List of tuples (xmin, ymin, xmax, ymax, confidence) for detected burners
@@ -668,29 +809,119 @@ def run_single_inference(image_array: np.ndarray, interpreter,
     for detail in output_details:
         outputs[detail['name']] = interpreter.get_tensor(detail['index'])
     
-    # Parse detections (adjust tensor names based on your model)
+    # Debug output analysis if requested
+    if debug:
+        analyze_model_outputs(outputs, confidence_threshold=confidence_threshold)
+    
+    # Parse detections - handle specific tensor names from this model
     detections = []
-    boxes = outputs.get('detection_boxes', outputs.get('boxes', None))
-    classes = outputs.get('detection_classes', outputs.get('classes', None))
-    scores = outputs.get('detection_scores', outputs.get('scores', None))
+    
+    # Map specific tensor names to standard format
+    classes = outputs.get('StatefulPartitionedCall:0', None)  # Class indices
+    scores = outputs.get('StatefulPartitionedCall:1', None)   # Confidence scores
+    boxes = outputs.get('StatefulPartitionedCall:3', None)    # Bounding boxes
+    num_detections = outputs.get('StatefulPartitionedCall:2', None)  # Number of detections (optional)
     
     if boxes is not None and classes is not None and scores is not None:
-        # Remove batch dimension
-        if boxes.ndim == 3: boxes = boxes[0]
-        if classes.ndim == 2: classes = classes[0]
-        if scores.ndim == 2: scores = scores[0]
+        # Remove extra dimensions to get the right shapes
+        if boxes.ndim == 3: boxes = boxes.squeeze(1)     # (32, 1, 4) -> (32, 4)
+        if scores.ndim == 2: scores = scores.squeeze(1)  # (32, 1) -> (32,)
+        if classes.ndim == 1: classes = classes          # (32,) -> (32,)
+        
+        if debug:
+            print(f"Debug: Found {len(scores)} potential detections")
+            print(f"Debug: boxes shape: {boxes.shape}, scores shape: {scores.shape}, classes shape: {classes.shape}")
         
         for i, score in enumerate(scores):
-            if score > 0.5 and int(classes[i]) == 0:  # confidence threshold and burner class
-                # boxes format: [ymin, xmin, ymax, xmax]
+            # Apply confidence threshold and check for burner class (assuming class 0 is burner)
+            if score > confidence_threshold and int(classes[i]) == 0:  
+                # boxes format: [ymin, xmin, ymax, xmax] (typical TF format)
                 ymin, xmin, ymax, xmax = boxes[i]
                 detection = (float(xmin), float(ymin), float(xmax), float(ymax), float(score))
                 detections.append(detection)
+                if debug:
+                    print(f"Debug: Added detection {i}: score={score:.3f}, box=({xmin:.3f}, {ymin:.3f}, {xmax:.3f}, {ymax:.3f})")
+    else:
+        print("⚠️  Missing required tensors:")
+        print(f"  classes: {classes is not None}")
+        print(f"  scores: {scores is not None}")
+        print(f"  boxes: {boxes is not None}")
+        print(f"  Available tensors: {list(outputs.keys())}")
     
     return detections
 
+
+# In[ ]:
+
+
+def test_inference_on_single_image(df: pd.DataFrame, interpreter, 
+                                   image_index: int = 0, 
+                                   confidence_threshold: float = 0.3,
+                                   debug: bool = True):
+    """
+    Test inference on a single image with detailed output analysis
+    
+    Args:
+        df: DataFrame with images
+        interpreter: TFLite interpreter
+        image_index: Index of image to test
+        confidence_threshold: Confidence threshold for detections
+        debug: Whether to show detailed analysis
+    """
+    if image_index >= len(df):
+        print(f"❌ Image index {image_index} out of range (max: {len(df)-1})")
+        return
+    
+    print(f"\n🧪 TESTING INFERENCE ON SINGLE IMAGE")
+    print("=" * 60)
+    
+    row = df.iloc[image_index]
+    print(f"Image: {row['image_name']}")
+    print(f"Ground truth burners: {row['num_burners']}")
+    print(f"Confidence threshold: {confidence_threshold}")
+    
+    # Run inference with debug enabled
+    detections = run_single_inference(row['image'], interpreter, 
+                                   normalization_method=PREPROCESSING_METHOD,
+                                   confidence_threshold=confidence_threshold,
+                                   debug=debug)
+    
+    print(f"\n📊 INFERENCE RESULTS")
+    print("=" * 40)
+    print(f"Found {len(detections)} detections:")
+    
+    for i, (xmin, ymin, xmax, ymax, confidence) in enumerate(detections):
+        print(f"  Detection {i+1}: confidence={confidence:.3f}, "
+              f"box=({xmin:.3f}, {ymin:.3f}, {xmax:.3f}, {ymax:.3f})")
+        
+        # Convert to pixel coordinates for visualization
+        h, w = row['image'].shape[:2]
+        x1, y1 = int(xmin * w), int(ymin * h)
+        x2, y2 = int(xmax * w), int(ymax * h)
+        print(f"    Pixel coords: ({x1}, {y1}) to ({x2}, {y2})")
+    
+    return detections
+
+
+# In[ ]:
+
+
+test_inference_on_single_image(
+       dataset_df, 
+       model_interpreter, 
+       image_index=0,
+       confidence_threshold=INFERENCE_CONFIDENCE,  # Use global variable
+       debug=True
+   )
+
+
+# In[ ]:
+
+
 def run_inference_on_dataframe(df: pd.DataFrame, interpreter, 
-                              normalization_method: str = "simple") -> pd.DataFrame:
+                              normalization_method: str = "simple",
+                              confidence_threshold: float = 0.5,
+                              debug: bool = False) -> pd.DataFrame:
     """Run inference on all images in the DataFrame"""
     
     print(f"\n🎯 RUNNING INFERENCE ON {len(df)} IMAGES")
@@ -701,7 +932,10 @@ def run_inference_on_dataframe(df: pd.DataFrame, interpreter,
     
     for i, row in df.iterrows():
         try:
-            detections = run_single_inference(row['image'], interpreter, normalization_method)
+            # Only enable debug for the first image to avoid spam
+            debug_this_image = debug and i == 0
+            detections = run_single_inference(row['image'], interpreter, normalization_method, 
+                                           confidence_threshold, debug_this_image)
             inferred_bboxes.append(detections)
             
             # Progress update
@@ -784,8 +1018,8 @@ def visualize_inference_results(df: pd.DataFrame, num_samples: int = 6):
 if model_interpreter is not None:
     print("\n🚀 STEP 4: INFERENCE")
     print("=" * 60)
-    
-    dataset_df = run_inference_on_dataframe(dataset_df, model_interpreter, "simple")
+
+    dataset_df = run_inference_on_dataframe(dataset_df, model_interpreter, PREPROCESSING_METHOD, INFERENCE_CONFIDENCE)
     
     # Visualize results
     if not dataset_df.empty:
@@ -793,10 +1027,12 @@ if model_interpreter is not None:
 else:
     print("\n⚠️  SKIPPING STEP 4: No model available")
 
-# %% [markdown]
-# ## Step 5: Evaluation
 
-# %%
+# ## Evaluation: Simple presence/absence
+
+# In[ ]:
+
+
 def evaluate_presence_absence(df: pd.DataFrame) -> Dict[str, float]:
     """
     Evaluate model performance using presence/absence method
@@ -844,6 +1080,12 @@ def evaluate_presence_absence(df: pd.DataFrame) -> Dict[str, float]:
     print(f"   True Negatives:  {true_negatives}")
     
     return results
+
+
+# ## Evaluation: Intersection over Union (IOU)
+
+# In[ ]:
+
 
 def calculate_iou(box1: Tuple[float, float, float, float], 
                  box2: Tuple[float, float, float, float]) -> float:
@@ -938,6 +1180,33 @@ def evaluate_iou_matching(df: pd.DataFrame, iou_threshold: float = 0.5) -> Dict[
     
     return results
 
+
+# In[ ]:
+
+
+def convert_numpy_types(obj):
+    """
+    Recursively convert numpy types to Python native types for JSON serialization
+    
+    Args:
+        obj: Object that may contain numpy types
+        
+    Returns:
+        Object with numpy types converted to Python native types
+    """
+    if isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_numpy_types(item) for item in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
+
 def visualize_evaluation_results(presence_results: Dict, iou_results: Dict):
     """Visualize evaluation results"""
     print(f"\n📈 EVALUATION RESULTS VISUALIZATION")
@@ -984,7 +1253,7 @@ if model_interpreter is not None and 'inferred_burner_bboxes' in dataset_df.colu
     presence_results = evaluate_presence_absence(dataset_df)
     
     # Method 2: IoU Matching
-    iou_results = evaluate_iou_matching(dataset_df, iou_threshold=0.5)
+    iou_results = evaluate_iou_matching(dataset_df, iou_threshold=IOU_CONFIDENCE)
     
     # Visualize results
     visualize_evaluation_results(presence_results, iou_results)
@@ -1001,18 +1270,23 @@ if model_interpreter is not None and 'inferred_burner_bboxes' in dataset_df.colu
         }
     }
     
+    # Convert numpy types to Python native types for JSON serialization
+    results_summary_serializable = convert_numpy_types(results_summary)
+    
     with open('evaluation_results.json', 'w') as f:
-        json.dump(results_summary, f, indent=2)
+        json.dump(results_summary_serializable, f, indent=2)
     
     print(f"\n💾 Results saved to 'evaluation_results.json'")
     
 else:
     print("\n⚠️  SKIPPING STEP 5: No inference results available")
 
-# %% [markdown]
-# ## Step 6: Final Summary and Export
 
-# %%
+# ## Final Summary
+
+# In[ ]:
+
+
 print("\n🏁 PIPELINE COMPLETE")
 print("=" * 60)
 
@@ -1048,3 +1322,4 @@ print(f"   - burner_dataset_complete.pkl (complete dataset)")
 print(f"   - dataset_summary.csv (summary statistics)")
 if model_interpreter is not None:
     print(f"   - evaluation_results.json (evaluation metrics)")
+
