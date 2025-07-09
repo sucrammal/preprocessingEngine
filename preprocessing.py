@@ -52,7 +52,7 @@ load_dotenv()
 # Configuration
 VIAM_CONFIG = {
     "model_name": os.getenv("VIAM_MODEL_NAME", "your-burner-detection-model"),
-    "model_org_id": os.getenv("VIAM_MODEL_ORG_ID", "your-model-org-id"),
+    "model_org_id": os.getenv("VIAM_ORG_ID", "your-model-org-id"),
     "model_version": os.getenv("VIAM_MODEL_VERSION", "2024-XX-XXTXX-XX-XX"),
 }
 
@@ -66,6 +66,14 @@ INFERENCE_CONFIDENCE = float(os.getenv("INFERENCE_CONFIDENCE", "0.5"))
 IOU_CONFIDENCE = float(os.getenv("IOU_CONFIDENCE", "0.5"))  # Fixed: was using INFERENCE_CONFIDENCE env var
 PREPROCESSING_METHOD = os.getenv("PREPROCESSING_METHOD", "simple")
 
+# LCN Configuration - New configurable parameters
+LCN_WINDOW_SIZE = int(os.getenv("LCN_WINDOW_SIZE", "9"))
+LCN_EPSILON = float(os.getenv("LCN_EPSILON", "1e-8"))
+LCN_NORMALIZATION_TYPE = os.getenv("LCN_NORMALIZATION_TYPE", "divisive")  # Options: divisive, subtractive, adaptive
+LCN_WINDOW_SHAPE = os.getenv("LCN_WINDOW_SHAPE", "square")  # Options: square, circular, gaussian
+LCN_STATISTICAL_MEASURE = os.getenv("LCN_STATISTICAL_MEASURE", "mean")  # Options: mean, median, percentile
+LCN_CONTRAST_BOOST = float(os.getenv("LCN_CONTRAST_BOOST", "1.0"))
+
 # Configuration printing will only happen when script is run directly
 def print_configuration_summary():
     """Print configuration summary"""
@@ -76,6 +84,17 @@ def print_configuration_summary():
     print(f"Preprocessing method: {PREPROCESSING_METHOD}")
     print(f"Inference confidence threshold: {INFERENCE_CONFIDENCE}")
     print(f"IoU evaluation threshold: {IOU_CONFIDENCE}")
+    
+    # Show LCN configuration if using LCN
+    if PREPROCESSING_METHOD == "lcn":
+        print(f"\n🎛️  LCN Configuration:")
+        print(f"   Window size: {LCN_WINDOW_SIZE}")
+        print(f"   Window shape: {LCN_WINDOW_SHAPE}")
+        print(f"   Normalization type: {LCN_NORMALIZATION_TYPE}")
+        print(f"   Statistical measure: {LCN_STATISTICAL_MEASURE}")
+        print(f"   Contrast boost: {LCN_CONTRAST_BOOST}")
+        print(f"   Epsilon: {LCN_EPSILON}")
+    
     print("=" * 60)
 
     # Quick preview of ground truth format
@@ -131,20 +150,316 @@ def apply_global_contrast_normalization(image_array: np.ndarray, epsilon: float 
     
     return np.clip(normalized, 0, 1)
 
-def apply_local_contrast_normalization(image_array: np.ndarray, window_size: int = 9, epsilon: float = 1e-8) -> np.ndarray:
-    """Apply Local Contrast Normalization (LCN)"""
+def create_lcn_kernel(window_size: int, shape: str = "square") -> np.ndarray:
+    """
+    Create different kernel shapes for LCN
+    
+    Args:
+        window_size: Size of the kernel (will be made odd if even)
+        shape: 'square', 'circular', or 'gaussian'
+    """
+    # Ensure odd window size
+    if window_size % 2 == 0:
+        window_size += 1
+    
+    if shape == "square":
+        return np.ones((window_size, window_size))
+    
+    elif shape == "circular":
+        kernel = np.zeros((window_size, window_size))
+        center = window_size // 2
+        radius = center
+        y, x = np.ogrid[:window_size, :window_size]
+        mask = (x - center) ** 2 + (y - center) ** 2 <= radius ** 2
+        kernel[mask] = 1
+        return kernel
+    
+    elif shape == "gaussian":
+        # Create Gaussian kernel
+        kernel = np.zeros((window_size, window_size))
+        center = window_size // 2
+        sigma = window_size / 6.0  # Standard deviation
+        
+        for i in range(window_size):
+            for j in range(window_size):
+                x, y = i - center, j - center
+                kernel[i, j] = np.exp(-(x**2 + y**2) / (2 * sigma**2))
+        
+        # Normalize kernel
+        kernel = kernel / np.sum(kernel)
+        return kernel
+    
+    else:
+        raise ValueError(f"Unknown kernel shape: {shape}")
+
+
+def apply_local_contrast_normalization(image_array: np.ndarray, 
+                                     window_size: int = None, 
+                                     epsilon: float = None,
+                                     normalization_type: str = None,
+                                     window_shape: str = None,
+                                     statistical_measure: str = None,
+                                     contrast_boost: float = None) -> np.ndarray:
+    """
+    Apply Enhanced Local Contrast Normalization (LCN)
+    
+    Args:
+        image_array: Input image array
+        window_size: Size of local window (uses global LCN_WINDOW_SIZE if None)
+        epsilon: Small value to prevent division by zero (uses global LCN_EPSILON if None)
+        normalization_type: Type of normalization - 'divisive', 'subtractive', 'adaptive'
+        window_shape: Shape of window - 'square', 'circular', 'gaussian'
+        statistical_measure: Statistical measure - 'mean', 'median', 'percentile'
+        contrast_boost: Contrast enhancement factor
+    
+    Returns:
+        Normalized image array
+    """
+    # Use global config if parameters not provided
+    window_size = window_size or LCN_WINDOW_SIZE
+    epsilon = epsilon or LCN_EPSILON
+    normalization_type = normalization_type or LCN_NORMALIZATION_TYPE
+    window_shape = window_shape or LCN_WINDOW_SHAPE
+    statistical_measure = statistical_measure or LCN_STATISTICAL_MEASURE
+    contrast_boost = contrast_boost or LCN_CONTRAST_BOOST
+    
+    # Ensure odd window size
+    if window_size % 2 == 0:
+        window_size += 1
+    
+    # Validate inputs
+    if not isinstance(image_array, np.ndarray) or image_array.ndim != 3:
+        raise ValueError("Input must be a 3D numpy array (height, width, channels)")
+    
+    # Increase epsilon for better numerical stability
+    epsilon = max(epsilon, 1e-6)
+    
     normalized = np.zeros_like(image_array, dtype=np.float32)
     
+    # Create kernel based on shape
+    if window_shape == "gaussian":
+        kernel = create_lcn_kernel(window_size, window_shape)
+    
     for channel in range(image_array.shape[2]):
-        channel_data = image_array[:, :, channel]
-        local_mean = ndimage.uniform_filter(channel_data, size=window_size, mode='reflect')
-        local_variance = ndimage.uniform_filter(channel_data**2, size=window_size, mode='reflect') - local_mean**2
-        local_std = np.sqrt(np.maximum(local_variance, 0)) + epsilon
-        channel_normalized = (channel_data - local_mean) / local_std
-        channel_normalized = (channel_normalized - channel_normalized.min()) / (channel_normalized.max() - channel_normalized.min() + epsilon)
+        channel_data = image_array[:, :, channel].astype(np.float32)
+        
+        # Check for problematic input data
+        if np.all(channel_data == channel_data.flat[0]):
+            # Uniform channel - just normalize to 0.5
+            normalized[:, :, channel] = 0.5
+            continue
+        
+        # Calculate local statistics based on statistical measure
+        try:
+            if statistical_measure == "mean":
+                if window_shape == "gaussian":
+                    local_stat = ndimage.convolve(channel_data, kernel, mode='reflect')
+                else:
+                    local_stat = ndimage.uniform_filter(channel_data, size=window_size, mode='reflect')
+                    
+            elif statistical_measure == "median":
+                local_stat = ndimage.median_filter(channel_data, size=window_size, mode='reflect')
+                
+            elif statistical_measure == "percentile":
+                # Use 25th percentile for local statistic
+                local_stat = ndimage.percentile_filter(channel_data, percentile=25, size=window_size, mode='reflect')
+            
+            else:
+                raise ValueError(f"Unknown statistical measure: {statistical_measure}")
+        
+        except Exception as e:
+            print(f"⚠️ Warning: Error in statistical calculation for channel {channel}: {e}")
+            # Fallback to simple uniform filter
+            local_stat = ndimage.uniform_filter(channel_data, size=window_size, mode='reflect')
+        
+        # Calculate local variance/std for divisive normalization
+        if normalization_type in ["divisive", "adaptive"]:
+            try:
+                if window_shape == "gaussian":
+                    local_variance = ndimage.convolve(channel_data**2, kernel, mode='reflect') - local_stat**2
+                else:
+                    local_variance = ndimage.uniform_filter(channel_data**2, size=window_size, mode='reflect') - local_stat**2
+                    
+                # Ensure non-negative variance and add epsilon
+                local_variance = np.maximum(local_variance, 0)
+                local_std = np.sqrt(local_variance) + epsilon
+                
+            except Exception as e:
+                print(f"⚠️ Warning: Error in variance calculation for channel {channel}: {e}")
+                # Fallback to a constant std
+                local_std = np.ones_like(channel_data) * epsilon
+        
+        # Apply normalization based on type
+        try:
+            if normalization_type == "divisive":
+                # Classic divisive normalization: (x - local_mean) / local_std
+                channel_normalized = (channel_data - local_stat) / local_std
+                
+            elif normalization_type == "subtractive":
+                # Subtractive normalization: x - local_mean
+                channel_normalized = channel_data - local_stat
+                
+            elif normalization_type == "adaptive":
+                # Adaptive normalization: stronger normalization in low-variance regions
+                # Cap the variance weight to prevent extreme values
+                variance_weight = np.clip(1.0 / local_std, 0, 100)  # Cap at 100x amplification
+                channel_normalized = (channel_data - local_stat) * variance_weight * contrast_boost
+                
+            else:
+                raise ValueError(f"Unknown normalization type: {normalization_type}")
+        
+        except Exception as e:
+            print(f"⚠️ Warning: Error in normalization for channel {channel}: {e}")
+            # Fallback to simple normalization
+            channel_normalized = (channel_data - channel_data.mean()) / (channel_data.std() + epsilon)
+        
+        # Apply contrast boost (with safety limits)
+        if contrast_boost != 1.0 and normalization_type != "adaptive":
+            # Limit contrast boost to reasonable range
+            safe_boost = np.clip(contrast_boost, 0.1, 5.0)
+            channel_normalized = channel_normalized * safe_boost
+        
+        # Check for NaN or inf values
+        if np.any(~np.isfinite(channel_normalized)):
+            print(f"⚠️ Warning: Non-finite values detected in channel {channel}, replacing with zeros")
+            channel_normalized = np.nan_to_num(channel_normalized, nan=0.0, posinf=1.0, neginf=-1.0)
+        
+        # Rescale to 0-1 range with improved stability
+        channel_min = np.percentile(channel_normalized, 1)  # Use 1st percentile instead of min
+        channel_max = np.percentile(channel_normalized, 99)  # Use 99th percentile instead of max
+        
+        if channel_max > channel_min + epsilon:
+            # Normal rescaling
+            channel_normalized = (channel_normalized - channel_min) / (channel_max - channel_min)
+            # Clip to [0, 1] range
+            channel_normalized = np.clip(channel_normalized, 0, 1)
+        else:
+            # Nearly uniform channel - map to middle value
+            print(f"⚠️ Warning: Channel {channel} has very low dynamic range, setting to 0.5")
+            channel_normalized = np.full_like(channel_normalized, 0.5)
+        
+        # Final safety check
+        if np.any(channel_normalized < 0) or np.any(channel_normalized > 1):
+            print(f"⚠️ Warning: Channel {channel} values outside [0,1] range, clipping")
+            channel_normalized = np.clip(channel_normalized, 0, 1)
+        
         normalized[:, :, channel] = channel_normalized
     
     return normalized
+
+
+def diagnose_lcn_issues(image_array: np.ndarray, 
+                       window_size: int = 9,
+                       normalization_type: str = "divisive") -> Dict[str, Any]:
+    """
+    Diagnose potential issues with LCN processing
+    
+    Args:
+        image_array: Input image array
+        window_size: Window size for LCN
+        normalization_type: Type of normalization
+    
+    Returns:
+        Dictionary with diagnostic information
+    """
+    print(f"\n🔍 DIAGNOSING LCN ISSUES")
+    print("=" * 50)
+    
+    diagnostics = {}
+    
+    # Basic image info
+    diagnostics['input_shape'] = image_array.shape
+    diagnostics['input_dtype'] = image_array.dtype
+    diagnostics['input_range'] = (image_array.min(), image_array.max())
+    
+    print(f"Input image shape: {image_array.shape}")
+    print(f"Input image dtype: {image_array.dtype}")
+    print(f"Input image range: [{image_array.min():.3f}, {image_array.max():.3f}]")
+    
+    # Check each channel
+    print(f"\nChannel analysis:")
+    for channel in range(image_array.shape[2]):
+        channel_data = image_array[:, :, channel]
+        channel_mean = channel_data.mean()
+        channel_std = channel_data.std()
+        channel_min = channel_data.min()
+        channel_max = channel_data.max()
+        
+        print(f"  Channel {channel}: mean={channel_mean:.3f}, std={channel_std:.3f}, range=[{channel_min:.3f}, {channel_max:.3f}]")
+        
+        # Check for problematic conditions
+        if channel_std < 1e-6:
+            print(f"    ⚠️ Channel {channel} has very low variance (uniform)")
+        if channel_min == channel_max:
+            print(f"    ⚠️ Channel {channel} is completely uniform")
+        
+        diagnostics[f'channel_{channel}'] = {
+            'mean': channel_mean,
+            'std': channel_std,
+            'min': channel_min,
+            'max': channel_max
+        }
+    
+    # Test LCN processing
+    print(f"\nTesting LCN with window_size={window_size}, type={normalization_type}:")
+    
+    try:
+        result = apply_local_contrast_normalization(
+            image_array, 
+            window_size=window_size,
+            normalization_type=normalization_type,
+            window_shape="square"
+        )
+        
+        diagnostics['lcn_success'] = True
+        diagnostics['output_shape'] = result.shape
+        diagnostics['output_range'] = (result.min(), result.max())
+        
+        print(f"✅ LCN processing successful")
+        print(f"Output shape: {result.shape}")
+        print(f"Output range: [{result.min():.3f}, {result.max():.3f}]")
+        
+        # Check output channels
+        print(f"\nOutput channel analysis:")
+        for channel in range(result.shape[2]):
+            channel_data = result[:, :, channel]
+            channel_mean = channel_data.mean()
+            channel_std = channel_data.std()
+            
+            print(f"  Channel {channel}: mean={channel_mean:.3f}, std={channel_std:.3f}")
+            
+            # Check for problematic output
+            if channel_mean < 0.01 or channel_mean > 0.99:
+                print(f"    ⚠️ Channel {channel} mean is extreme: {channel_mean:.3f}")
+            if channel_std < 0.01:
+                print(f"    ⚠️ Channel {channel} has very low output variance")
+                
+            diagnostics[f'output_channel_{channel}'] = {
+                'mean': channel_mean,
+                'std': channel_std
+            }
+        
+        # Check for color artifacts
+        if result.shape[2] == 3:  # RGB image
+            r_mean, g_mean, b_mean = [result[:,:,i].mean() for i in range(3)]
+            
+            # Check for extreme channel imbalances
+            channel_means = [r_mean, g_mean, b_mean]
+            max_mean, min_mean = max(channel_means), min(channel_means)
+            
+            if max_mean - min_mean > 0.5:
+                print(f"    ⚠️ Large channel imbalance detected!")
+                print(f"    R: {r_mean:.3f}, G: {g_mean:.3f}, B: {b_mean:.3f}")
+                diagnostics['color_imbalance'] = True
+            else:
+                diagnostics['color_imbalance'] = False
+        
+    except Exception as e:
+        print(f"❌ LCN processing failed: {e}")
+        diagnostics['lcn_success'] = False
+        diagnostics['error'] = str(e)
+    
+    return diagnostics
 
 
 # In[ ]:
@@ -343,7 +658,178 @@ def visualize_preprocessing_detail_comparison(image_array: np.ndarray,
     print("   - GCN: May show enhanced contrast globally") 
     print("   - LCN: Should show enhanced local details and edge contrast")
 
-print("✅ Preprocessing functions defined")
+
+def test_lcn_parameters(image_array: np.ndarray, 
+                       window_sizes: List[int] = [5, 9, 15, 25],
+                       normalization_types: List[str] = ["divisive", "subtractive", "adaptive"],
+                       window_shapes: List[str] = ["square", "circular", "gaussian"],
+                       crop_size: int = 150):
+    """
+    Test different LCN parameter combinations and visualize the effects
+    
+    Args:
+        image_array: Input image array
+        window_sizes: List of window sizes to test
+        normalization_types: List of normalization types to test
+        window_shapes: List of window shapes to test
+        crop_size: Size of cropped region for detail view
+    """
+    print(f"\n🧪 TESTING LCN PARAMETERS")
+    print("=" * 60)
+    
+    # Create a center crop for detailed analysis
+    h, w = image_array.shape[:2]
+    center_y, center_x = h // 2, w // 2
+    y1 = max(0, center_y - crop_size // 2)
+    y2 = min(h, center_y + crop_size // 2)
+    x1 = max(0, center_x - crop_size // 2)
+    x2 = min(w, center_x + crop_size // 2)
+    
+    # Test 1: Window Size Effects
+    print(f"\n1️⃣ Testing Window Sizes: {window_sizes}")
+    fig, axes = plt.subplots(2, len(window_sizes), figsize=(4 * len(window_sizes), 8))
+    
+    for i, window_size in enumerate(window_sizes):
+        # Apply LCN with different window sizes
+        lcn_result = apply_local_contrast_normalization(
+            image_array, 
+            window_size=window_size,
+            normalization_type="divisive",
+            window_shape="square"
+        )
+        
+        # Show full image
+        axes[0, i].imshow((lcn_result * 255).astype(np.uint8))
+        axes[0, i].set_title(f"Window Size: {window_size}")
+        axes[0, i].axis('off')
+        
+        # Show cropped detail
+        cropped = lcn_result[y1:y2, x1:x2]
+        axes[1, i].imshow((cropped * 255).astype(np.uint8))
+        axes[1, i].set_title(f"Detail: {window_size}")
+        axes[1, i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Test 2: Normalization Type Effects
+    print(f"\n2️⃣ Testing Normalization Types: {normalization_types}")
+    fig, axes = plt.subplots(2, len(normalization_types), figsize=(4 * len(normalization_types), 8))
+    
+    for i, norm_type in enumerate(normalization_types):
+        # Apply LCN with different normalization types
+        lcn_result = apply_local_contrast_normalization(
+            image_array, 
+            window_size=9,
+            normalization_type=norm_type,
+            window_shape="square"
+        )
+        
+        # Show full image
+        axes[0, i].imshow((lcn_result * 255).astype(np.uint8))
+        axes[0, i].set_title(f"Type: {norm_type}")
+        axes[0, i].axis('off')
+        
+        # Show cropped detail
+        cropped = lcn_result[y1:y2, x1:x2]
+        axes[1, i].imshow((cropped * 255).astype(np.uint8))
+        axes[1, i].set_title(f"Detail: {norm_type}")
+        axes[1, i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Test 3: Window Shape Effects
+    print(f"\n3️⃣ Testing Window Shapes: {window_shapes}")
+    fig, axes = plt.subplots(2, len(window_shapes), figsize=(4 * len(window_shapes), 8))
+    
+    for i, shape in enumerate(window_shapes):
+        # Apply LCN with different window shapes
+        lcn_result = apply_local_contrast_normalization(
+            image_array, 
+            window_size=9,
+            normalization_type="divisive",
+            window_shape=shape
+        )
+        
+        # Show full image
+        axes[0, i].imshow((lcn_result * 255).astype(np.uint8))
+        axes[0, i].set_title(f"Shape: {shape}")
+        axes[0, i].axis('off')
+        
+        # Show cropped detail
+        cropped = lcn_result[y1:y2, x1:x2]
+        axes[1, i].imshow((cropped * 255).astype(np.uint8))
+        axes[1, i].set_title(f"Detail: {shape}")
+        axes[1, i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Show current global configuration
+    print(f"\n🎛️ Current Global LCN Configuration:")
+    print(f"   Window Size: {LCN_WINDOW_SIZE}")
+    print(f"   Window Shape: {LCN_WINDOW_SHAPE}")
+    print(f"   Normalization Type: {LCN_NORMALIZATION_TYPE}")
+    print(f"   Statistical Measure: {LCN_STATISTICAL_MEASURE}")
+    print(f"   Contrast Boost: {LCN_CONTRAST_BOOST}")
+    print(f"   Epsilon: {LCN_EPSILON}")
+
+
+def compare_lcn_configurations(image_array: np.ndarray, 
+                              configs: List[Dict],
+                              config_names: List[str] = None):
+    """
+    Compare different LCN configurations side by side
+    
+    Args:
+        image_array: Input image array
+        configs: List of configuration dictionaries
+        config_names: Optional names for each configuration
+    """
+    if config_names is None:
+        config_names = [f"Config {i+1}" for i in range(len(configs))]
+    
+    print(f"\n🔍 COMPARING LCN CONFIGURATIONS")
+    print("=" * 60)
+    
+    fig, axes = plt.subplots(2, len(configs), figsize=(4 * len(configs), 8))
+    if len(configs) == 1:
+        axes = axes.reshape(2, 1)
+    
+    for i, (config, name) in enumerate(zip(configs, config_names)):
+        # Apply LCN with specific configuration
+        lcn_result = apply_local_contrast_normalization(image_array, **config)
+        
+        # Show full image
+        axes[0, i].imshow((lcn_result * 255).astype(np.uint8))
+        axes[0, i].set_title(f"{name}")
+        axes[0, i].axis('off')
+        
+        # Show histogram
+        axes[1, i].hist(lcn_result.flatten(), bins=50, alpha=0.7, color=f'C{i}')
+        axes[1, i].set_title(f"{name} Histogram")
+        axes[1, i].set_xlabel("Pixel Value")
+        axes[1, i].set_ylabel("Frequency")
+        axes[1, i].set_xlim(0, 1)
+        
+        # Print configuration details
+        print(f"\n{name}:")
+        for key, value in config.items():
+            print(f"  {key}: {value}")
+    
+    plt.tight_layout()
+    plt.show()
+
+
+print("✅ Enhanced preprocessing functions defined")
+print("💡 New LCN parameters available:")
+print("   - LCN_WINDOW_SIZE: Window size for local statistics")
+print("   - LCN_NORMALIZATION_TYPE: divisive, subtractive, adaptive")
+print("   - LCN_WINDOW_SHAPE: square, circular, gaussian")
+print("   - LCN_STATISTICAL_MEASURE: mean, median, percentile")
+print("   - LCN_CONTRAST_BOOST: Contrast enhancement factor")
+print("   - LCN_EPSILON: Small value to prevent division by zero")
 
 
 # ## Data validation and cleanup

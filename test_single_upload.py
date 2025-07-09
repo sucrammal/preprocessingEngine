@@ -16,17 +16,22 @@ def test_single_upload():
     print("🧪 TESTING SINGLE IMAGE UPLOAD")
     print("=" * 50)
     
-    # Set environment variable for single image upload
-    os.environ['MAX_IMAGES_UPLOAD'] = '1'
-    
-    # Run the main upload script
+    # Run the main upload script with debug flag and max-images limit
     try:
-        result = subprocess.run([sys.executable, 'upload_with_bounding_boxes.py'], 
-                              capture_output=False, text=True)
+        result = subprocess.run([
+            sys.executable, 
+            'upload_with_bounding_boxes.py',
+            '--debug',           # Enable verbose debug output
+            '--max-images', '1'  # Upload only 1 image for testing
+        ], capture_output=False, text=True)
         
         if result.returncode == 0:
             print("\n✅ Single image test upload completed successfully!")
             print("Check your Viam dataset to verify the upload worked correctly.")
+            print("\nTo upload more images:")
+            print("  python upload_with_bounding_boxes.py --max-images 10")
+            print("  python upload_with_bounding_boxes.py --debug  # All images with verbose output")
+            print("  python upload_with_bounding_boxes.py          # All images, minimal output")
         else:
             print(f"\n❌ Test upload failed with return code: {result.returncode}")
             

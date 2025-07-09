@@ -11,13 +11,14 @@ This script:
 4. Uses environment variables for credentials and configuration
 
 Usage:
-    python upload_with_bounding_boxes.py
+    python upload_with_bounding_boxes.py [--debug] [--max-images N]
 """
 
 import asyncio
 import os
 import tempfile
 import json
+import argparse
 from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 import numpy as np
@@ -43,6 +44,40 @@ from viam.proto.app.data import BoundingBox
 # Load environment variables
 load_dotenv()
 
+# Global debug flag
+DEBUG = False
+
+def debug_print(message: str):
+    """Print message only if debug mode is enabled"""
+    if DEBUG:
+        print(message)
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="Upload preprocessed images with bounding boxes to Viam",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    
+    parser.add_argument(
+        '--debug', 
+        action='store_true',
+        help='Enable verbose debug output showing detailed upload and bounding box information'
+    )
+    
+    parser.add_argument(
+        '--max-images', 
+        type=int,
+        default=0,
+        help='Maximum number of images to upload (0 for all images)'
+    )
+    
+    return parser.parse_args()
+
+# Parse command line arguments
+args = parse_arguments()
+DEBUG = args.debug
+
 # Viam API Configuration
 VIAM_CONFIG = {
     "api_key": os.getenv("VIAM_API_KEY", ""),
@@ -55,8 +90,9 @@ VIAM_CONFIG = {
 # Dataset Configuration
 DATASET_ID = os.getenv("VIAM_DATASET_ID", "")
 PREPROCESSING_METHOD = os.getenv("UPLOAD_PREPROCESSING_METHOD", "lcn")
-UPLOAD_TAGS = os.getenv("UPLOAD_TAGS", "preprocessed,lcn,burner-detection").split(",")
-MAX_IMAGES_UPLOAD = int(os.getenv("MAX_IMAGES_UPLOAD", "0"))  # 0 means all images
+# Remove the complex tag creation logic and replace with just the single tag
+UPLOAD_TAGS = os.getenv("UPLOAD_TAGS", "preprocessing:lcn").split(",")
+MAX_IMAGES_UPLOAD = args.max_images if args.max_images > 0 else int(os.getenv("MAX_IMAGES_UPLOAD", "0"))
 TEMP_DIR = os.getenv("TEMP_DIR", "temp_preprocessed")
 
 # Remove LCN scaling configuration - simplified approach
@@ -68,6 +104,7 @@ print(f"Upload tags: {UPLOAD_TAGS}")
 print(f"Max images to upload: {'All' if MAX_IMAGES_UPLOAD == 0 else MAX_IMAGES_UPLOAD}")
 print(f"Temp directory: {TEMP_DIR}")
 print(f"Dataset ID: {DATASET_ID}")
+print(f"Debug mode: {'Enabled' if DEBUG else 'Disabled'}")
 print("=" * 70)
 
 # Validate required configuration
@@ -118,7 +155,7 @@ def create_temp_directory() -> str:
     """Create temporary directory for preprocessed images"""
     temp_path = Path(TEMP_DIR)
     temp_path.mkdir(exist_ok=True)
-    print(f"📁 Created temp directory: {temp_path.absolute()}")
+    debug_print(f"📁 Created temp directory: {temp_path.absolute()}")
     return str(temp_path)
 
 
@@ -163,7 +200,7 @@ def normalize_bounding_boxes_for_image(bboxes: List[Dict], image_height: int, im
     """
     normalized_bboxes = []
     
-    print(f"📏 Normalizing bounding boxes for image size: {image_width}x{image_height}")
+    debug_print(f"📏 Normalizing bounding boxes for image size: {image_width}x{image_height}")
     
     for bbox in bboxes:
         normalized_bbox = bbox.copy()
@@ -235,7 +272,7 @@ async def upload_image_with_bounding_boxes(
     """
     try:
         # Step 1: Upload the image using file_upload_from_path
-        print(f"📤 Uploading image: {Path(image_path).name}")
+        debug_print(f"📤 Uploading image: {Path(image_path).name}")
         file_id = await data_client.file_upload_from_path(
             part_id=VIAM_CONFIG["part_id"],
             tags=tags,
@@ -253,7 +290,7 @@ async def upload_image_with_bounding_boxes(
             normalized_bboxes = normalize_bounding_boxes_for_image(bboxes, image_height, image_width)
             
             # Step 4: Add bounding boxes to the uploaded image
-            print(f"📦 Adding {len(normalized_bboxes)} bounding boxes to image")
+            debug_print(f"📦 Adding {len(normalized_bboxes)} bounding boxes to image")
             
             for bbox_dict in normalized_bboxes:
                 # Create Viam BoundingBox object
@@ -269,7 +306,7 @@ async def upload_image_with_bounding_boxes(
                     y_max_normalized=viam_bbox.y_max_normalized
                 )
                 
-                print(f"  ✅ Added bounding box: {viam_bbox.label} "
+                debug_print(f"  ✅ Added bounding box: {viam_bbox.label} "
                       f"({viam_bbox.x_min_normalized:.3f}, {viam_bbox.y_min_normalized:.3f}, "
                       f"{viam_bbox.x_max_normalized:.3f}, {viam_bbox.y_max_normalized:.3f})")
         
@@ -338,24 +375,13 @@ async def process_and_upload_metadata_files(viam_client: ViamClient, temp_dir: s
             image_tags = []
             if 'captureMetadata' in metadata and 'tags' in metadata['captureMetadata']:
                 image_tags = metadata['captureMetadata']['tags']
-                print(f"📋 Found image-specific tags: {image_tags}")
+                debug_print(f"📋 Found image-specific tags: {image_tags}")
             else:
-                print(f"⚠️  No image-specific tags found, using preset tags")
+                debug_print(f"⚠️  No image-specific tags found, using preset tags")
                 image_tags = UPLOAD_TAGS
             
-            # Step 6: Create enhanced tags by combining image-specific tags with preprocessing info
-            image_name = Path(image_path).name
-            enhanced_tags = image_tags + [
-                f"original-file:{image_name}",
-                f"preprocessing:{PREPROCESSING_METHOD}",
-                f"dataset-id:{DATASET_ID}"
-            ]
-            
-            # Add bounding box summary tags
-            if 'annotations' in metadata and 'bboxes' in metadata['annotations']:
-                num_bboxes = len(metadata['annotations']['bboxes'])
-                enhanced_tags.append(f"num-bboxes:{num_bboxes}")
-                enhanced_tags.append("has-bboxes" if num_bboxes > 0 else "no-bboxes")
+            # Step 6: Use simplified tags - just the preprocessing method
+            simplified_tags = ["preprocessing:lcn"]
             
             # Step 7: Upload image with bounding boxes
             file_id, success = await upload_image_with_bounding_boxes(
@@ -363,13 +389,13 @@ async def process_and_upload_metadata_files(viam_client: ViamClient, temp_dir: s
                 temp_image_path,
                 preprocessed_image,
                 metadata,
-                enhanced_tags
+                simplified_tags
             )
             
             if success:
                 successful_uploads += 1
                 uploaded_file_ids.append(file_id)
-                print(f"✅ Successfully uploaded: {image_name} (ID: {file_id})")
+                debug_print(f"✅ Successfully uploaded: {Path(image_path).name} (ID: {file_id})")
             else:
                 failed_uploads += 1
             
@@ -403,7 +429,7 @@ def cleanup_temp_directory(temp_dir: str):
     try:
         import shutil
         shutil.rmtree(temp_dir)
-        print(f"🧹 Cleaned up temp directory: {temp_dir}")
+        debug_print(f"🧹 Cleaned up temp directory: {temp_dir}")
     except Exception as e:
         print(f"⚠️  Warning: Could not clean up temp directory: {e}")
 

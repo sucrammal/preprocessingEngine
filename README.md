@@ -35,7 +35,7 @@ A comprehensive pipeline for evaluating TensorFlow Lite burner detection models 
     ```
     # Model Configuration
     VIAM_MODEL_NAME=your-burner-detection-model
-    VIAM_MODEL_ORG_ID=your-model-org-id
+    VIAM_ORG_ID=your-model-org-id
     VIAM_MODEL_VERSION=2024-XX-XXTXX-XX-XX
 
     # Data Paths
@@ -47,6 +47,14 @@ A comprehensive pipeline for evaluating TensorFlow Lite burner detection models 
     PREPROCESSING_METHOD=simple    # Options: simple, gcn, lcn
     INFERENCE_CONFIDENCE=0.5       # Detection confidence threshold
     IOU_CONFIDENCE=0.5            # IoU matching threshold
+
+    # Advanced LCN Configuration (only used when PREPROCESSING_METHOD=lcn)
+    LCN_WINDOW_SIZE=9             # Size of local window (recommend: 5-25)
+    LCN_NORMALIZATION_TYPE=divisive # Options: divisive, subtractive, adaptive
+    LCN_WINDOW_SHAPE=square       # Options: square, circular, gaussian
+    LCN_STATISTICAL_MEASURE=mean  # Options: mean, median, percentile
+    LCN_CONTRAST_BOOST=1.0        # Contrast enhancement factor (recommend: 0.5-2.0)
+    LCN_EPSILON=1e-8              # Small value to prevent division by zero
     ```
 
 4. **Ensure you're logged in to Viam CLI** (for model download):
@@ -60,6 +68,90 @@ Run `preprocessing.py` as a Python script or use the Jupyter notebook format:
 
 ```bash
 python preprocessing.py
+```
+
+## 🎛️ **Advanced LCN Configuration**
+
+The Local Contrast Normalization (LCN) method now supports extensive customization through environment variables:
+
+### **Window Size (`LCN_WINDOW_SIZE`)**
+
+Controls the size of the local neighborhood for statistics calculation:
+
+-   **Small values (5-9)**: More local detail enhancement, faster processing
+-   **Large values (15-25)**: Smoother normalization, better for global lighting variations
+-   **Default**: 9
+
+### **Normalization Type (`LCN_NORMALIZATION_TYPE`)**
+
+-   **`divisive`**: Classic LCN - (pixel - local_mean) / local_std
+-   **`subtractive`**: Simpler version - pixel - local_mean
+-   **`adaptive`**: Stronger normalization in low-variance regions
+-   **Default**: divisive
+
+### **Window Shape (`LCN_WINDOW_SHAPE`)**
+
+-   **`square`**: Standard square window (fastest)
+-   **`circular`**: Circular window (more natural neighborhood)
+-   **`gaussian`**: Gaussian-weighted window (smoothest results)
+-   **Default**: square
+
+### **Statistical Measure (`LCN_STATISTICAL_MEASURE`)**
+
+-   **`mean`**: Use local mean (standard approach)
+-   **`median`**: Use local median (more robust to outliers)
+-   **`percentile`**: Use 25th percentile (good for bright images)
+-   **Default**: mean
+
+### **Contrast Boost (`LCN_CONTRAST_BOOST`)**
+
+-   **Values < 1.0**: Reduce contrast enhancement
+-   **Values > 1.0**: Increase contrast enhancement
+-   **Default**: 1.0
+
+### **Example Configurations**
+
+```bash
+# For images with strong shadows/lighting variations
+export LCN_WINDOW_SIZE=15
+export LCN_NORMALIZATION_TYPE=adaptive
+export LCN_WINDOW_SHAPE=gaussian
+export LCN_CONTRAST_BOOST=1.5
+
+# For fine detail enhancement
+export LCN_WINDOW_SIZE=5
+export LCN_NORMALIZATION_TYPE=divisive
+export LCN_WINDOW_SHAPE=square
+export LCN_CONTRAST_BOOST=1.2
+
+# For robust processing with outliers
+export LCN_WINDOW_SIZE=9
+export LCN_NORMALIZATION_TYPE=divisive
+export LCN_STATISTICAL_MEASURE=median
+export LCN_WINDOW_SHAPE=circular
+```
+
+### **Testing LCN Parameters**
+
+The preprocessing module includes helper functions to test different LCN configurations:
+
+```python
+from preprocessing import create_dataset_dataframe, test_lcn_parameters, compare_lcn_configurations
+
+# Load a sample image
+df = create_dataset_dataframe(max_images=1)
+sample_image = df.iloc[0]['image']
+
+# Test different parameter combinations
+test_lcn_parameters(sample_image)
+
+# Compare specific configurations
+configs = [
+    {"window_size": 5, "normalization_type": "divisive"},
+    {"window_size": 15, "normalization_type": "adaptive", "contrast_boost": 1.5},
+    {"window_size": 9, "window_shape": "gaussian", "statistical_measure": "median"}
+]
+compare_lcn_configurations(sample_image, configs, ["Fine Detail", "Strong Adaptive", "Robust Gaussian"])
 ```
 
 **Pipeline Steps**:
