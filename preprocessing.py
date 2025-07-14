@@ -120,6 +120,224 @@ def print_configuration_summary():
             print("  No annotations found in sample metadata")
 
 
+def load_dataset_dataframe(file_path: str = "burner_dataset_complete.pkl") -> pd.DataFrame:
+    """
+    Load a saved dataset DataFrame from a local file
+    
+    Args:
+        file_path: Path to the saved DataFrame file (.pkl, .csv, or .json)
+        
+    Returns:
+        Loaded DataFrame, or empty DataFrame if file not found
+    """
+    print(f"\n📂 LOADING DATASET FROM: {file_path}")
+    print("=" * 60)
+    
+    if not os.path.exists(file_path):
+        print(f"❌ File not found: {file_path}")
+        print("💡 Available files in current directory:")
+        for f in os.listdir('.'):
+            if f.endswith(('.pkl', '.csv', '.json')):
+                print(f"   - {f}")
+        return pd.DataFrame()
+    
+    try:
+        if file_path.endswith('.pkl'):
+            df = pd.read_pickle(file_path)
+            print(f"✅ Loaded DataFrame from pickle: {file_path}")
+        elif file_path.endswith('.csv'):
+            df = pd.read_csv(file_path)
+            print(f"✅ Loaded DataFrame from CSV: {file_path}")
+            print("⚠️  Note: CSV format may not preserve all data types (images, bounding boxes)")
+        elif file_path.endswith('.json'):
+            df = pd.read_json(file_path)
+            print(f"✅ Loaded DataFrame from JSON: {file_path}")
+            print("⚠️  Note: JSON format may not preserve all data types (images, bounding boxes)")
+        else:
+            print(f"❌ Unsupported file format: {file_path}")
+            print("Supported formats: .pkl, .csv, .json")
+            return pd.DataFrame()
+        
+        # Print dataset summary
+        print(f"\n📊 DATASET SUMMARY")
+        print("=" * 40)
+        print(f"Total images: {len(df)}")
+        
+        if 'num_burners' in df.columns:
+            print(f"Images with ground truth burners: {len(df[df['has_burners']]) if 'has_burners' in df.columns else 'N/A'}")
+            print(f"Total ground truth burners: {df['num_burners'].sum()}")
+            print(f"Average burners per image: {df['num_burners'].mean():.2f}")
+        
+        if 'num_inferred_burners' in df.columns:
+            print(f"Images with predicted burners: {len(df[df['has_inferred_burners']]) if 'has_inferred_burners' in df.columns else 'N/A'}")
+            print(f"Total predicted burners: {df['num_inferred_burners'].sum()}")
+            print(f"Average predicted burners per image: {df['num_inferred_burners'].mean():.2f}")
+        
+        # Show available columns
+        print(f"\n📋 Available columns:")
+        for col in df.columns:
+            print(f"   - {col}")
+        
+        return df
+        
+    except Exception as e:
+        print(f"❌ Error loading DataFrame: {e}")
+        return pd.DataFrame()
+
+
+def save_dataset_dataframe(df: pd.DataFrame, 
+                          file_path: str = "burner_dataset_complete.pkl",
+                          save_format: str = "pickle",
+                          include_images: bool = True) -> bool:
+    """
+    Save a dataset DataFrame to a local file
+    
+    Args:
+        df: DataFrame to save
+        file_path: Path where to save the file
+        save_format: Format to save in ('pickle', 'csv', 'json')
+        include_images: Whether to include image arrays (only for pickle format)
+        
+    Returns:
+        True if save was successful, False otherwise
+    """
+    print(f"\n💾 SAVING DATASET TO: {file_path}")
+    print("=" * 60)
+    
+    if df.empty:
+        print("❌ DataFrame is empty - nothing to save")
+        return False
+    
+    try:
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(file_path) if os.path.dirname(file_path) else '.', exist_ok=True)
+        
+        if save_format.lower() == "pickle":
+            # Save as pickle (preserves all data types including images)
+            df.to_pickle(file_path)
+            print(f"✅ Saved DataFrame to pickle: {file_path}")
+            print(f"   File size: {os.path.getsize(file_path) / (1024*1024):.2f} MB")
+            
+        elif save_format.lower() == "csv":
+            # Save as CSV (loses image arrays and complex data types)
+            if include_images and 'image' in df.columns:
+                print("⚠️  Warning: CSV format cannot preserve image arrays")
+                print("   Creating summary DataFrame without images...")
+                # Create summary DataFrame without image arrays
+                summary_df = df.drop(columns=['image'])
+                summary_df.to_csv(file_path, index=False)
+            else:
+                df.to_csv(file_path, index=False)
+            print(f"✅ Saved DataFrame to CSV: {file_path}")
+            
+        elif save_format.lower() == "json":
+            # Save as JSON (loses image arrays and complex data types)
+            if include_images and 'image' in df.columns:
+                print("⚠️  Warning: JSON format cannot preserve image arrays")
+                print("   Creating summary DataFrame without images...")
+                # Create summary DataFrame without image arrays
+                summary_df = df.drop(columns=['image'])
+                summary_df.to_json(file_path, orient='records', indent=2)
+            else:
+                df.to_json(file_path, orient='records', indent=2)
+            print(f"✅ Saved DataFrame to JSON: {file_path}")
+            
+        else:
+            print(f"❌ Unsupported save format: {save_format}")
+            print("Supported formats: pickle, csv, json")
+            return False
+        
+        # Print save summary
+        print(f"\n📊 SAVE SUMMARY")
+        print("=" * 40)
+        print(f"Total images: {len(df)}")
+        print(f"Columns saved: {len(df.columns)}")
+        print(f"Save format: {save_format}")
+        
+        if 'num_burners' in df.columns:
+            print(f"Ground truth burners: {df['num_burners'].sum()}")
+        if 'num_inferred_burners' in df.columns:
+            print(f"Predicted burners: {df['num_inferred_burners'].sum()}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error saving DataFrame: {e}")
+        return False
+
+
+def save_dataset_summary(df: pd.DataFrame, 
+                        summary_file: str = "dataset_summary.csv",
+                        detailed_summary: bool = True) -> bool:
+    """
+    Save a detailed summary of the dataset (without image arrays)
+    
+    Args:
+        df: DataFrame to summarize
+        summary_file: Path for the summary file
+        detailed_summary: Whether to include detailed statistics
+        
+    Returns:
+        True if save was successful, False otherwise
+    """
+    print(f"\n📋 SAVING DATASET SUMMARY TO: {summary_file}")
+    print("=" * 60)
+    
+    if df.empty:
+        print("❌ DataFrame is empty - nothing to summarize")
+        return False
+    
+    try:
+        # Create summary DataFrame with key columns
+        summary_columns = ['image_name', 'image_path', 'num_burners', 'has_burners']
+        if 'inferred_burner_bboxes' in df.columns:
+            summary_columns.extend(['num_inferred_burners', 'has_inferred_burners'])
+        
+        # Filter to only include columns that exist
+        available_columns = [col for col in summary_columns if col in df.columns]
+        summary_df = df[available_columns].copy()
+        
+        # Add detailed statistics if requested
+        if detailed_summary:
+            # Add metadata about the dataset
+            summary_stats = {
+                'total_images': len(df),
+                'images_with_gt_burners': len(df[df['has_burners']]) if 'has_burners' in df.columns else 0,
+                'images_with_pred_burners': len(df[df['has_inferred_burners']]) if 'has_inferred_burners' in df.columns else 0,
+                'total_gt_burners': df['num_burners'].sum() if 'num_burners' in df.columns else 0,
+                'total_pred_burners': df['num_inferred_burners'].sum() if 'num_inferred_burners' in df.columns else 0,
+                'avg_gt_burners_per_image': df['num_burners'].mean() if 'num_burners' in df.columns else 0,
+                'avg_pred_burners_per_image': df['num_inferred_burners'].mean() if 'num_inferred_burners' in df.columns else 0
+            }
+            
+            # Create a separate stats file
+            stats_file = summary_file.replace('.csv', '_stats.json')
+            with open(stats_file, 'w') as f:
+                json.dump(summary_stats, f, indent=2)
+            print(f"✅ Saved detailed statistics to: {stats_file}")
+        
+        # Save summary DataFrame
+        summary_df.to_csv(summary_file, index=False)
+        print(f"✅ Saved summary to: {summary_file}")
+        
+        # Print summary
+        print(f"\n📊 SUMMARY STATISTICS")
+        print("=" * 40)
+        print(f"Total images: {len(summary_df)}")
+        if 'num_burners' in summary_df.columns:
+            print(f"Images with ground truth burners: {len(summary_df[summary_df['has_burners']])}")
+            print(f"Total ground truth burners: {summary_df['num_burners'].sum()}")
+        if 'num_inferred_burners' in summary_df.columns:
+            print(f"Images with predicted burners: {len(summary_df[summary_df['has_inferred_burners']])}")
+            print(f"Total predicted burners: {summary_df['num_inferred_burners'].sum()}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error saving summary: {e}")
+        return False
+
+
 # ### Preprocessing and data checks: 
 # - Select between simple normalization (simple), local contrast normalization (LCN), and global contrast normalization (GCN).
 # - Check if all bounding box keys are present
@@ -1322,12 +1540,31 @@ def test_inference_on_single_image(df: pd.DataFrame, interpreter,
 def run_inference_on_dataframe(df: pd.DataFrame, interpreter, 
                               normalization_method: str = "simple",
                               confidence_threshold: float = 0.5,
-                              debug: bool = False) -> pd.DataFrame:
-    """Run inference on all images in the DataFrame"""
+                              debug: bool = False,
+                              auto_save: bool = True,
+                              save_path: str = "burner_dataset_complete.pkl") -> pd.DataFrame:
+    """
+    Run inference on all images in the DataFrame
+    
+    Args:
+        df: DataFrame with images
+        interpreter: TFLite interpreter
+        normalization_method: Preprocessing method ('simple', 'gcn', 'lcn')
+        confidence_threshold: Minimum confidence score for detections
+        debug: Whether to show detailed debug information
+        auto_save: Whether to automatically save the DataFrame after inference
+        save_path: Path to save the DataFrame (if auto_save is True)
+        
+    Returns:
+        DataFrame with inference results added
+    """
     
     print(f"\n🎯 RUNNING INFERENCE ON {len(df)} IMAGES")
     print("=" * 60)
     print(f"Using {normalization_method} normalization")
+    print(f"Confidence threshold: {confidence_threshold}")
+    if auto_save:
+        print(f"Auto-save enabled: {save_path}")
     
     inferred_bboxes = []
     
@@ -1354,6 +1591,15 @@ def run_inference_on_dataframe(df: pd.DataFrame, interpreter,
     print(f"   Images with predicted burners: {len(df_with_inference[df_with_inference['has_inferred_burners']])}")
     print(f"   Total predicted burners: {df_with_inference['num_inferred_burners'].sum()}")
     print(f"   Average predicted burners per image: {df_with_inference['num_inferred_burners'].mean():.2f}")
+    
+    # Auto-save if enabled
+    if auto_save:
+        print(f"\n💾 Auto-saving results...")
+        save_success = save_dataset_dataframe(df_with_inference, save_path, "pickle", True)
+        if save_success:
+            print(f"✅ Results saved to: {save_path}")
+        else:
+            print(f"⚠️  Failed to save results to: {save_path}")
     
     return df_with_inference
 
@@ -1620,18 +1866,489 @@ def visualize_evaluation_results(presence_results: Dict, iou_results: Dict):
     plt.show()
 
 
-def main():
-    """Main function to run the preprocessing pipeline"""
+def analyze_failure_cases(df: pd.DataFrame, num_samples: int = 5, random_seed: int = 42) -> pd.DataFrame:
+    """
+    Analyze and visualize failure cases where presence/absence predictions don't match ground truth
+    
+    Args:
+        df: DataFrame with inference results (must have 'has_burners' and 'has_inferred_burners' columns)
+        num_samples: Number of random failure cases to display
+        random_seed: Random seed for reproducible sampling
+        
+    Returns:
+        DataFrame containing only the failure cases
+    """
+    print(f"\n🔍 ANALYZING FAILURE CASES")
+    print("=" * 60)
+    
+    # Check if inference results are available
+    if 'has_inferred_burners' not in df.columns:
+        print("❌ No inference results found in DataFrame")
+        print("Please run run_inference_on_dataframe() first")
+        return pd.DataFrame()
+    
+    # Identify failure cases (presence/absence mismatches)
+    false_positives = df[(~df['has_burners']) & (df['has_inferred_burners'])]  # No GT, but predicted
+    false_negatives = df[(df['has_burners']) & (~df['has_inferred_burners'])]  # Has GT, but not predicted
+    
+    # Combine all failure cases
+    failure_cases = pd.concat([false_positives, false_negatives], ignore_index=True)
+    
+    print(f"📊 Failure Case Analysis:")
+    print(f"   Total images: {len(df)}")
+    print(f"   False Positives: {len(false_positives)} (predicted burners, but no ground truth)")
+    print(f"   False Negatives: {len(false_negatives)} (missed burners that exist in ground truth)")
+    print(f"   Total failure cases: {len(failure_cases)}")
+    
+    if len(failure_cases) == 0:
+        print("✅ No failure cases found! Perfect presence/absence accuracy.")
+        return pd.DataFrame()
+    
+    # Calculate failure rate
+    failure_rate = len(failure_cases) / len(df) * 100
+    print(f"   Failure rate: {failure_rate:.1f}%")
+    
+    # Sample random failure cases for visualization
+    np.random.seed(random_seed)
+    sample_size = min(num_samples, len(failure_cases))
+    sampled_failures = failure_cases.sample(n=sample_size, random_state=random_seed)
+    
+    print(f"\n📸 Visualizing {sample_size} random failure cases:")
+    
+    # Create visualization
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    # Pad with empty plots if we have fewer samples than subplots
+    for i in range(len(axes)):
+        if i < len(sampled_failures):
+            row = sampled_failures.iloc[i]
+            
+            # Display image
+            axes[i].imshow(row['image'])
+            
+            # Create detailed title
+            failure_type = "False Positive" if not row['has_burners'] else "False Negative"
+            color = "red" if failure_type == "False Positive" else "orange"
+            
+            title = f"{row['image_name']}\n{failure_type}\nGT: {row['num_burners']}, Pred: {row['num_inferred_burners']}"
+            axes[i].set_title(title, color=color, fontsize=10)
+            axes[i].axis('off')
+            
+            h, w = row['image'].shape[:2]
+            
+            # Draw ground truth bounding boxes (green)
+            for bbox in row['burner_bounding_boxes']:
+                xmin, ymin, xmax, ymax = bbox
+                x1, y1 = int(xmin * w), int(ymin * h)
+                x2, y2 = int(xmax * w), int(ymax * h)
+                
+                rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, 
+                                       linewidth=2, edgecolor='green', facecolor='none')
+                axes[i].add_patch(rect)
+            
+            # Draw inferred bounding boxes (red)
+            for bbox in row['inferred_burner_bboxes']:
+                xmin, ymin, xmax, ymax, confidence = bbox
+                x1, y1 = int(xmin * w), int(ymin * h)
+                x2, y2 = int(xmax * w), int(ymax * h)
+                
+                rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, 
+                                       linewidth=2, edgecolor='red', facecolor='none', linestyle='--')
+                axes[i].add_patch(rect)
+                
+                # Add confidence score
+                axes[i].text(x1, y1 - 5, f'{confidence:.2f}', 
+                           color='red', fontsize=8, weight='bold')
+        else:
+            # Hide empty subplots
+            axes[i].set_visible(False)
+    
+    # Add legend
+    import matplotlib.lines as mlines
+    legend_elements = [
+        mlines.Line2D([], [], color='green', linewidth=2, label='Ground Truth'),
+        mlines.Line2D([], [], color='red', linewidth=2, linestyle='--', label='Predictions'),
+        mlines.Line2D([], [], color='red', linewidth=2, label='False Positive'),
+        mlines.Line2D([], [], color='orange', linewidth=2, label='False Negative')
+    ]
+    plt.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1.0))
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Print detailed analysis of sampled cases
+    print(f"\n📋 Detailed Analysis of Sampled Cases:")
+    print("-" * 60)
+    for i, (_, row) in enumerate(sampled_failures.iterrows()):
+        failure_type = "False Positive" if not row['has_burners'] else "False Negative"
+        print(f"\n{i+1}. {row['image_name']} - {failure_type}")
+        print(f"   Ground truth burners: {row['num_burners']}")
+        print(f"   Predicted burners: {row['num_inferred_burners']}")
+        
+        if failure_type == "False Positive":
+            print(f"   Issue: Model predicted {row['num_inferred_burners']} burners but none exist")
+            print(f"   Predictions: {[f'{conf:.2f}' for *_, conf in row['inferred_burner_bboxes']]}")
+        else:
+            print(f"   Issue: Model missed {row['num_burners']} existing burners")
+            if row['num_inferred_burners'] > 0:
+                print(f"   Partial predictions: {[f'{conf:.2f}' for *_, conf in row['inferred_burner_bboxes']]}")
+    
+    # Provide suggestions for improvement
+    print(f"\n💡 Suggestions for Improvement:")
+    print("-" * 60)
+    
+    if len(false_positives) > 0:
+        avg_fp_confidence = np.mean([
+            np.mean([conf for *_, conf in row['inferred_burner_bboxes']]) 
+            for _, row in false_positives.iterrows() if len(row['inferred_burner_bboxes']) > 0
+        ])
+        print(f"   False Positives ({len(false_positives)} cases):")
+        print(f"   - Average confidence: {avg_fp_confidence:.3f}")
+        print(f"   - Consider raising confidence threshold above {avg_fp_confidence:.3f}")
+        print(f"   - Review images with reflections, shadows, or burner-like objects")
+    
+    if len(false_negatives) > 0:
+        print(f"   False Negatives ({len(false_negatives)} cases):")
+        print(f"   - Model is missing existing burners")
+        print(f"   - Consider lowering confidence threshold")
+        print(f"   - Review preprocessing method effectiveness")
+        print(f"   - Check if burners are too small, occluded, or poorly lit")
+    
+    return failure_cases
+
+
+def debug_single_image_pipeline(metadata_file: str, 
+                              preprocessing_type: str = "simple",
+                              model_path: str = None,
+                              confidence_threshold: float = 0.5,
+                              debug: bool = False) -> None:
+    """
+    Debug function to visualize the complete pipeline for a single image
+    
+    Args:
+        metadata_file: Path to the metadata JSON file
+        preprocessing_type: Type of preprocessing ('simple', 'gcn', 'lcn')
+        model_path: Path to the .tflite model file
+        confidence_threshold: Confidence threshold for inference
+        debug: Whether to show detailed debug information
+    """
+    print(f"\n🔍 DEBUGGING SINGLE IMAGE PIPELINE")
+    print("=" * 60)
+    print(f"Metadata file: {metadata_file}")
+    print(f"Preprocessing type: {preprocessing_type}")
+    print(f"Model path: {model_path}")
+    print(f"Confidence threshold: {confidence_threshold}")
+    print("=" * 60)
+    
+    try:
+        # Step 1: Load metadata
+        if not os.path.exists(metadata_file):
+            print(f"❌ Metadata file not found: {metadata_file}")
+            return
+            
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        
+        print(f"✅ Loaded metadata: {os.path.basename(metadata_file)}")
+        
+        # Step 2: Find corresponding image
+        image_path = find_image_for_metadata(metadata_file)
+        if not image_path:
+            print(f"❌ No corresponding image found for metadata file")
+            return
+        
+        print(f"✅ Found corresponding image: {os.path.basename(image_path)}")
+        
+        # Step 3: Load image
+        image = Image.open(image_path).convert('RGB')
+        image_array = np.array(image)
+        print(f"✅ Loaded image: {image_array.shape} (H x W x C)")
+        
+        # Step 4: Extract ground truth bounding boxes
+        gt_bboxes = extract_burner_bounding_boxes(metadata)
+        print(f"✅ Found {len(gt_bboxes)} ground truth burner bounding boxes")
+        
+        # Step 5: Apply preprocessing
+        preprocessed_image = preprocess_image(image_array, None, preprocessing_type)
+        print(f"✅ Applied {preprocessing_type} preprocessing")
+        
+        # Step 6: Load model and run inference (if model path provided)
+        inferred_bboxes = []
+        if model_path:
+            if not os.path.exists(model_path):
+                print(f"❌ Model file not found: {model_path}")
+                model_path = None
+            else:
+                try:
+                    interpreter = load_model(model_path)
+                    print(f"✅ Loaded model: {os.path.basename(model_path)}")
+                    
+                    # Run inference
+                    inferred_bboxes = run_single_inference(
+                        image_array, 
+                        interpreter, 
+                        preprocessing_type, 
+                        confidence_threshold,
+                        debug=debug
+                    )
+                    print(f"✅ Inference complete: {len(inferred_bboxes)} detections")
+                    
+                    # Show detection details
+                    if inferred_bboxes:
+                        print(f"📊 Detection details:")
+                        for i, (xmin, ymin, xmax, ymax, conf) in enumerate(inferred_bboxes):
+                            print(f"  Detection {i+1}: confidence={conf:.3f}, "
+                                  f"box=({xmin:.3f}, {ymin:.3f}, {xmax:.3f}, {ymax:.3f})")
+                    
+                except Exception as e:
+                    print(f"❌ Error loading model or running inference: {e}")
+                    model_path = None
+        
+        # Step 7: Create visualization
+        print(f"\n📊 Creating visualization...")
+        
+        # Determine number of subplots
+        num_plots = 3 if model_path else 2
+        fig, axes = plt.subplots(1, num_plots, figsize=(5 * num_plots, 5))
+        
+        # Ensure axes is always a list
+        if num_plots == 1:
+            axes = [axes]
+        elif num_plots == 2:
+            axes = [axes[0], axes[1]]
+        
+        h, w = image_array.shape[:2]
+        
+        # Plot 1: Original image with ground truth bounding boxes
+        axes[0].imshow(image_array)
+        axes[0].set_title(f"Original Image\n{len(gt_bboxes)} Ground Truth Burners")
+        axes[0].axis('off')
+        
+        # Draw ground truth bounding boxes (green)
+        for bbox in gt_bboxes:
+            xmin, ymin, xmax, ymax = bbox
+            x1, y1 = int(xmin * w), int(ymin * h)
+            x2, y2 = int(xmax * w), int(ymax * h)
+            
+            rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, 
+                                   linewidth=2, edgecolor='green', facecolor='none')
+            axes[0].add_patch(rect)
+            
+            # Add label
+            axes[0].text(x1, y1 - 5, 'GT', color='green', fontsize=10, weight='bold')
+        
+        # Plot 2: Preprocessed image
+        # Convert preprocessed image to displayable format
+        display_preprocessed = (preprocessed_image * 255).astype(np.uint8)
+        axes[1].imshow(display_preprocessed)
+        axes[1].set_title(f"Preprocessed Image\n({preprocessing_type.upper()})")
+        axes[1].axis('off')
+        
+        # Plot 3: Preprocessed image with inferred bounding boxes (if model available)
+        if model_path and num_plots == 3:
+            axes[2].imshow(display_preprocessed)
+            axes[2].set_title(f"Inference Results\n{len(inferred_bboxes)} Detections")
+            axes[2].axis('off')
+            
+            # Draw inferred bounding boxes (red)
+            for bbox in inferred_bboxes:
+                xmin, ymin, xmax, ymax, confidence = bbox
+                x1, y1 = int(xmin * w), int(ymin * h)
+                x2, y2 = int(xmax * w), int(ymax * h)
+                
+                rect = patches.Rectangle((x1, y1), x2 - x1, y2 - y1, 
+                                       linewidth=2, edgecolor='red', facecolor='none', linestyle='--')
+                axes[2].add_patch(rect)
+                
+                # Add confidence score
+                axes[2].text(x1, y1 - 5, f'{confidence:.2f}', 
+                           color='red', fontsize=10, weight='bold')
+        
+        # Add legend
+        if model_path:
+            import matplotlib.lines as mlines
+            legend_elements = [
+                mlines.Line2D([], [], color='green', linewidth=2, label='Ground Truth'),
+                mlines.Line2D([], [], color='red', linewidth=2, linestyle='--', label='Predictions')
+            ]
+            plt.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.15, 1.0))
+        
+        plt.tight_layout()
+        plt.show()
+        
+        # Step 8: Print summary
+        print(f"\n📋 PIPELINE SUMMARY")
+        print("=" * 40)
+        print(f"Image: {os.path.basename(image_path)}")
+        print(f"Original size: {image_array.shape[:2]} (H x W)")
+        print(f"Preprocessing: {preprocessing_type}")
+        print(f"Ground truth burners: {len(gt_bboxes)}")
+        
+        if model_path:
+            print(f"Model: {os.path.basename(model_path)}")
+            print(f"Predicted burners: {len(inferred_bboxes)}")
+            print(f"Confidence threshold: {confidence_threshold}")
+            
+            # Basic accuracy check
+            if len(gt_bboxes) > 0 and len(inferred_bboxes) > 0:
+                print(f"✅ Both ground truth and predictions found")
+            elif len(gt_bboxes) > 0 and len(inferred_bboxes) == 0:
+                print(f"⚠️  Ground truth found but no predictions")
+            elif len(gt_bboxes) == 0 and len(inferred_bboxes) > 0:
+                print(f"⚠️  Predictions found but no ground truth")
+            else:
+                print(f"ℹ️  No ground truth or predictions")
+        
+        print(f"✅ Debug visualization complete!")
+        
+    except Exception as e:
+        print(f"❌ Error in debug pipeline: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def find_metadata_for_image(image_file: str) -> str:
+    """
+    Find corresponding metadata file for an image file
+    
+    Args:
+        image_file: Path to the image file
+        
+    Returns:
+        Path to the corresponding metadata file, or None if not found
+    """
+    if not os.path.exists(image_file):
+        return None
+    
+    # Get image filename and binary ID from the path
+    image_basename = os.path.basename(image_file)
+    image_name_without_ext = os.path.splitext(image_basename)[0]
+    
+    # Search through all metadata files
+    metadata_files = glob.glob(os.path.join(METADATA_DIR, "*.json"))
+    
+    for metadata_file in metadata_files:
+        try:
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Method 1: Try direct filename match
+            metadata_filename = metadata.get('fileName', '')
+            metadata_fileext = metadata.get('fileExt', '')
+            full_metadata_filename = metadata_filename + metadata_fileext
+            
+            if full_metadata_filename == image_basename:
+                return metadata_file
+            
+            # Method 2: Try binary ID match
+            binary_id = metadata.get('id', '')
+            if binary_id and binary_id in image_basename:
+                return metadata_file
+                
+            # Method 3: Try filename without extension match
+            if metadata_filename == image_name_without_ext:
+                return metadata_file
+                
+        except Exception as e:
+            # Skip problematic metadata files
+            continue
+    
+    return None
+
+
+def debug_image_pipeline(file_path: str, 
+                        preprocessing_type: str = "simple",
+                        model_path: str = None,
+                        confidence_threshold: float = 0.5,
+                        debug: bool = False) -> None:
+    """
+    Debug function that works with either metadata files or image files
+    
+    This is an overloaded version of debug_single_image_pipeline that automatically
+    detects whether the input is a metadata file or image file and handles accordingly.
+    
+    Args:
+        file_path: Path to either metadata JSON file or image file
+        preprocessing_type: Type of preprocessing ('simple', 'gcn', 'lcn')
+        model_path: Path to the .tflite model file
+        confidence_threshold: Confidence threshold for inference
+        debug: Whether to show detailed debug information
+    """
+    print(f"\n🔍 AUTO-DETECTING FILE TYPE AND RUNNING DEBUG PIPELINE")
+    print("=" * 60)
+    print(f"Input file: {file_path}")
+    
+    # Check if file exists
+    if not os.path.exists(file_path):
+        print(f"❌ File not found: {file_path}")
+        return
+    
+    # Determine file type and get metadata file path
+    metadata_file = None
+    
+    # Check if it's a metadata file (JSON in metadata directory)
+    if (file_path.endswith('.json') and 
+        (METADATA_DIR in file_path or os.path.dirname(file_path) == METADATA_DIR)):
+        metadata_file = file_path
+        print(f"✅ Detected metadata file")
+        
+    # Check if it's an image file
+    elif file_path.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.tiff')):
+        print(f"✅ Detected image file")
+        print(f"🔍 Searching for corresponding metadata...")
+        
+        metadata_file = find_metadata_for_image(file_path)
+        if metadata_file:
+            print(f"✅ Found metadata: {os.path.basename(metadata_file)}")
+        else:
+            print(f"❌ No corresponding metadata found for image: {os.path.basename(file_path)}")
+            return
+    
+    # Unknown file type
+    else:
+        print(f"❌ Unknown file type. Expected .json metadata file or image file (.jpg, .png, etc.)")
+        return
+    
+    # Call the original debug function with metadata file
+    print(f"🚀 Running debug pipeline with metadata: {os.path.basename(metadata_file)}")
+    
+    debug_single_image_pipeline(
+        metadata_file=metadata_file,
+        preprocessing_type=preprocessing_type,
+        model_path=model_path,
+        confidence_threshold=confidence_threshold,
+        debug=debug
+    )
+
+
+def main(load_existing: bool = False, existing_file: str = "burner_dataset_complete.pkl"):
+    """
+    Main function to run the preprocessing pipeline
+    
+    Args:
+        load_existing: Whether to load existing dataset instead of creating new one
+        existing_file: Path to existing dataset file to load
+    """
     # Print configuration summary
     print_configuration_summary()
     
-    # Create the dataset
-    print("\n🚀 STEP 2: DATASET CREATION")
+    # Step 1: Load or Create Dataset
+    print("\n🚀 STEP 1: DATASET LOADING/CREATION")
     print("=" * 60)
-
-    # For testing, limit to first 100 images - remove this for full dataset
-    # dataset_df = create_dataset_dataframe(max_images=100)
-    dataset_df = create_dataset_dataframe()
+    
+    if load_existing:
+        print(f"📂 Attempting to load existing dataset from: {existing_file}")
+        dataset_df = load_dataset_dataframe(existing_file)
+        
+        if dataset_df.empty:
+            print("❌ Failed to load existing dataset, creating new one...")
+            dataset_df = create_dataset_dataframe()
+        else:
+            print("✅ Successfully loaded existing dataset!")
+    else:
+        print("🆕 Creating new dataset...")
+        dataset_df = create_dataset_dataframe()
 
     if not dataset_df.empty:
         # Visualize samples
@@ -1675,22 +2392,34 @@ def main():
             debug=True
         )
 
-    # Run inference if model is available
+    # Run inference if model is available and we don't already have inference results
     if model_interpreter is not None:
-        print("\n🚀 STEP 4: INFERENCE")
-        print("=" * 60)
+        # Check if we already have inference results
+        if 'inferred_burner_bboxes' in dataset_df.columns:
+            print("\n✅ Inference results already available in loaded dataset")
+            print("   Skipping inference step...")
+        else:
+            print("\n🚀 STEP 3: INFERENCE")
+            print("=" * 60)
 
-        dataset_df = run_inference_on_dataframe(dataset_df, model_interpreter, PREPROCESSING_METHOD, INFERENCE_CONFIDENCE)
+            dataset_df = run_inference_on_dataframe(
+                dataset_df, 
+                model_interpreter, 
+                PREPROCESSING_METHOD, 
+                INFERENCE_CONFIDENCE,
+                auto_save=True,
+                save_path="burner_dataset_complete.pkl"
+            )
         
         # Visualize results
-        if not dataset_df.empty:
+        if not dataset_df.empty and 'inferred_burner_bboxes' in dataset_df.columns:
             visualize_inference_results(dataset_df)
     else:
-        print("\n⚠️  SKIPPING STEP 4: No model available")
+        print("\n⚠️  SKIPPING STEP 3: No model available")
 
     # Run evaluation if we have inference results
-    if model_interpreter is not None and 'inferred_burner_bboxes' in dataset_df.columns:
-        print("\n🚀 STEP 5: EVALUATION")
+    if 'inferred_burner_bboxes' in dataset_df.columns:
+        print("\n🚀 STEP 4: EVALUATION")
         print("=" * 60)
         
         # Method 1: Presence/Absence
@@ -1702,6 +2431,12 @@ def main():
         # Visualize results
         visualize_evaluation_results(presence_results, iou_results)
         
+        # Step 5: Analyze failure cases
+        print("\n🚀 STEP 5: FAILURE CASE ANALYSIS")
+        print("=" * 60)
+        
+        failure_cases = analyze_failure_cases(dataset_df, num_samples=5, random_seed=42)
+        
         # Save results
         results_summary = {
             'presence_absence': presence_results,
@@ -1711,6 +2446,12 @@ def main():
                 'images_with_burners': len(dataset_df[dataset_df['has_burners']]),
                 'total_gt_burners': dataset_df['num_burners'].sum(),
                 'total_predicted_burners': dataset_df['num_inferred_burners'].sum()
+            },
+            'failure_analysis': {
+                'total_failure_cases': len(failure_cases),
+                'failure_rate_percent': len(failure_cases) / len(dataset_df) * 100 if len(dataset_df) > 0 else 0,
+                'false_positives': len(dataset_df[(~dataset_df['has_burners']) & (dataset_df['has_inferred_burners'])]),
+                'false_negatives': len(dataset_df[(dataset_df['has_burners']) & (~dataset_df['has_inferred_burners'])])
             }
         }
         
@@ -1739,18 +2480,18 @@ def main():
             print(f"   Images with predicted burners: {len(dataset_df[dataset_df['has_inferred_burners']])}")
             print(f"   Total predicted burners: {dataset_df['num_inferred_burners'].sum()}")
         
-        # Save DataFrame
-        dataset_df.to_pickle('burner_dataset_complete.pkl')
-        print(f"\n💾 Complete dataset saved to 'burner_dataset_complete.pkl'")
+        # Save complete dataset using new function
+        print(f"\n💾 Saving complete dataset...")
+        save_success = save_dataset_dataframe(dataset_df, "burner_dataset_complete.pkl", "pickle", True)
         
-        # Create summary CSV
-        summary_columns = ['image_name', 'num_burners', 'has_burners']
-        if 'inferred_burner_bboxes' in dataset_df.columns:
-            summary_columns.extend(['num_inferred_burners', 'has_inferred_burners'])
+        # Save summary using new function
+        print(f"\n📋 Saving dataset summary...")
+        summary_success = save_dataset_summary(dataset_df, "dataset_summary.csv", True)
         
-        summary_df = dataset_df[summary_columns]
-        summary_df.to_csv('dataset_summary.csv', index=False)
-        print(f"📋 Summary saved to 'dataset_summary.csv'")
+        if save_success and summary_success:
+            print(f"✅ All files saved successfully!")
+        else:
+            print(f"⚠️  Some files may not have been saved properly")
         
     else:
         print("❌ No dataset created")
@@ -1759,8 +2500,19 @@ def main():
     print(f"📁 Output files:")
     print(f"   - burner_dataset_complete.pkl (complete dataset)")
     print(f"   - dataset_summary.csv (summary statistics)")
-    if model_interpreter is not None:
+    if 'inferred_burner_bboxes' in dataset_df.columns:
         print(f"   - evaluation_results.json (evaluation metrics)")
+        print(f"   - dataset_summary_stats.json (detailed statistics)")
+
+
+def main_load_existing():
+    """Convenience function to run main with existing dataset loading"""
+    main(load_existing=True)
+
+
+def main_create_new():
+    """Convenience function to run main with new dataset creation"""
+    main(load_existing=False)
 
 
 if __name__ == "__main__":

@@ -196,6 +196,232 @@ compare_lcn_configurations(sample_image, configs, ["Fine Detail", "Strong Adapti
 | `evaluate_iou_matching()`           | Spatial detection metrics            |
 | `visualize_preprocessing_effects()` | Compare preprocessing methods        |
 
+## 💾 **DataFrame Save and Load Functions**
+
+The preprocessing engine now includes robust functions for saving and loading datasets, making it easy to:
+
+-   Save datasets after inference to avoid re-running expensive operations
+-   Load existing datasets to continue analysis or evaluation
+-   Create lightweight summaries for sharing or analysis
+-   Support multiple file formats (pickle, CSV, JSON)
+
+### **Core Functions**
+
+#### `load_dataset_dataframe(file_path: str = "burner_dataset_complete.pkl") -> pd.DataFrame`
+
+Loads a saved dataset DataFrame from a local file.
+
+**Parameters:**
+
+-   `file_path`: Path to the saved DataFrame file (.pkl, .csv, or .json)
+
+**Returns:**
+
+-   Loaded DataFrame, or empty DataFrame if file not found
+
+**Features:**
+
+-   Supports multiple file formats (pickle, CSV, JSON)
+-   Provides detailed dataset summary upon loading
+-   Shows available columns and statistics
+-   Handles missing files gracefully with helpful error messages
+
+**Example:**
+
+```python
+from preprocessing import load_dataset_dataframe
+
+# Load existing dataset
+df = load_dataset_dataframe("burner_dataset_complete.pkl")
+
+if not df.empty:
+    print(f"Loaded {len(df)} images with {df['num_burners'].sum()} ground truth burners")
+```
+
+#### `save_dataset_dataframe(df: pd.DataFrame, file_path: str = "burner_dataset_complete.pkl", save_format: str = "pickle", include_images: bool = True) -> bool`
+
+Saves a dataset DataFrame to a local file.
+
+**Parameters:**
+
+-   `df`: DataFrame to save
+-   `file_path`: Path where to save the file
+-   `save_format`: Format to save in ('pickle', 'csv', 'json')
+-   `include_images`: Whether to include image arrays (only for pickle format)
+
+**Returns:**
+
+-   True if save was successful, False otherwise
+
+**Features:**
+
+-   Supports multiple formats with appropriate warnings
+-   Automatically creates directories if needed
+-   Provides file size information for pickle files
+-   Handles format-specific limitations (e.g., CSV/JSON can't preserve images)
+
+**Example:**
+
+```python
+from preprocessing import save_dataset_dataframe
+
+# Save complete dataset with images (pickle format)
+success = save_dataset_dataframe(df, "complete_dataset.pkl", "pickle", True)
+
+# Save summary without images (CSV format)
+success = save_dataset_dataframe(df, "summary.csv", "csv", False)
+```
+
+#### `save_dataset_summary(df: pd.DataFrame, summary_file: str = "dataset_summary.csv", detailed_summary: bool = True) -> bool`
+
+Saves a detailed summary of the dataset (without image arrays).
+
+**Parameters:**
+
+-   `df`: DataFrame to summarize
+-   `summary_file`: Path for the summary file
+-   `detailed_summary`: Whether to include detailed statistics
+
+**Returns:**
+
+-   True if save was successful, False otherwise
+
+**Features:**
+
+-   Creates lightweight summary files
+-   Includes key columns (image_name, num_burners, has_burners, etc.)
+-   Optionally creates detailed statistics JSON file
+-   Perfect for sharing or analysis without large image data
+
+**Example:**
+
+```python
+from preprocessing import save_dataset_summary
+
+# Save basic summary
+save_dataset_summary(df, "basic_summary.csv", False)
+
+# Save detailed summary with statistics
+save_dataset_summary(df, "detailed_summary.csv", True)
+```
+
+### **Enhanced Functions**
+
+#### `run_inference_on_dataframe()` - Enhanced with Auto-Save
+
+The `run_inference_on_dataframe()` function now includes auto-save functionality:
+
+**New Parameters:**
+
+-   `auto_save`: Whether to automatically save the DataFrame after inference (default: True)
+-   `save_path`: Path to save the DataFrame (default: "burner_dataset_complete.pkl")
+
+**Example:**
+
+```python
+# Run inference with auto-save enabled
+df_with_inference = run_inference_on_dataframe(
+    df,
+    interpreter,
+    normalization_method="simple",
+    confidence_threshold=0.5,
+    auto_save=True,
+    save_path="my_results.pkl"
+)
+```
+
+#### `main()` - Enhanced with Load Options
+
+The `main()` function now supports loading existing datasets:
+
+**New Parameters:**
+
+-   `load_existing`: Whether to load existing dataset instead of creating new one (default: False)
+-   `existing_file`: Path to existing dataset file to load (default: "burner_dataset_complete.pkl")
+
+**Convenience Functions:**
+
+-   `main_load_existing()`: Run main with existing dataset loading
+-   `main_create_new()`: Run main with new dataset creation
+
+### **Usage Examples**
+
+#### Basic Usage
+
+```python
+from preprocessing import load_dataset_dataframe, save_dataset_dataframe
+
+# Load existing dataset
+df = load_dataset_dataframe("burner_dataset_complete.pkl")
+
+# Save in different formats
+save_dataset_dataframe(df, "backup.pkl", "pickle", True)  # Complete with images
+save_dataset_dataframe(df, "summary.csv", "csv", False)   # Summary only
+```
+
+#### Pipeline Usage
+
+```python
+from preprocessing import main_load_existing, main_create_new
+
+# Run pipeline with existing data (loads if available, creates if not)
+main_load_existing()
+
+# Run pipeline with new dataset creation
+main_create_new()
+```
+
+#### Advanced Usage
+
+```python
+from preprocessing import load_dataset_dataframe, save_dataset_summary
+
+# Load and analyze existing data
+df = load_dataset_dataframe("my_dataset.pkl")
+
+if not df.empty:
+    # Create detailed summary with statistics
+    save_dataset_summary(df, "analysis_summary.csv", True)
+
+    # Check what's available
+    print(f"Available columns: {list(df.columns)}")
+    print(f"Has inference results: {'inferred_burner_bboxes' in df.columns}")
+```
+
+### **File Formats**
+
+| Format            | Best For                                       | Preserves                                                     | File Size                   | Use Case                                            |
+| ----------------- | ---------------------------------------------- | ------------------------------------------------------------- | --------------------------- | --------------------------------------------------- |
+| **Pickle (.pkl)** | Complete datasets with images and complex data | All data types including numpy arrays, images, bounding boxes | Large (includes image data) | Full dataset backup, continuing analysis            |
+| **CSV (.csv)**    | Lightweight summaries and analysis             | Basic data types (strings, numbers, booleans)                 | Small                       | Sharing results, quick analysis, spreadsheet import |
+| **JSON (.json)**  | Web applications, API responses                | Basic data types and nested structures                        | Small to medium             | Web dashboards, data exchange                       |
+
+### **Best Practices**
+
+1. **Use pickle for complete datasets**: When you need to preserve all data including images
+2. **Use CSV/JSON for summaries**: When sharing results or doing analysis without images
+3. **Enable auto-save**: Let the pipeline automatically save after inference
+4. **Check file existence**: Always verify if files exist before loading
+5. **Handle empty DataFrames**: Check if loaded data is empty before proceeding
+
+### **Error Handling**
+
+All functions include robust error handling:
+
+-   Missing files are handled gracefully with helpful messages
+-   Format limitations are clearly communicated
+-   Directory creation is automatic
+-   File size information is provided for large files
+
+### **Integration with Existing Pipeline**
+
+The new functions integrate seamlessly with the existing pipeline:
+
+-   Auto-save is enabled by default in `run_inference_on_dataframe()`
+-   The main pipeline can load existing data to avoid re-processing
+-   Summary files are created automatically
+-   All existing functionality remains unchanged
+
 ## 📁 **Project Structure**
 
 ```

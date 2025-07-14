@@ -63,6 +63,8 @@ data/
 metadata/
 images/
 dataset.jsonl
+lewisHouse3BurnerData/
+lewisHouse3BurnerMetadata
 
 # models
 models/
